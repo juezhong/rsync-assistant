@@ -1,0 +1,3 @@
+[submodule "third_party/rsync"]
+	path = third_party/rsync
+	url = https://github.com/RsyncProject/rsync.git

@@ -1,0 +1,183 @@
+#include "rsync_assistant/task_control_socket.hpp"
+
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <signal.h>
+#include <string>
+#include <string_view>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+
+namespace {
+std::filesystem::path state_directory(int argc, char* argv[]) {
+  if (argc >= 3 && std::string_view{argv[argc - 2]} == "--state-dir") return argv[argc - 1];
+  return std::filesystem::temp_directory_path() / "rsync-assistant";
+}
+
+int run_daemon(const std::filesystem::path& state_dir) {
+  std::filesystem::create_directories(state_dir);
+  rsync_assistant::TaskControlService service{state_dir / "tasks.sqlite3"};
+  rsync_assistant::TaskControlSocketServer server{service, state_dir / "control.sock"};
+  server.serve();
+  return 0;
+}
+
+int run_tui(const std::filesystem::path& state_dir) {
+  rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
+  auto screen = ftxui::ScreenInteractive::Fullscreen();
+  std::string status = "r: refresh  q: quit";
+  std::vector<rsync_assistant::TransferTask> tasks;
+  int selected = 0;
+  bool creating = false;
+  std::string source;
+  std::string destination;
+  auto source_input = ftxui::Input(&source, "Source path");
+  auto destination_input = ftxui::Input(&destination, "Destination path");
+  auto form = ftxui::Container::Vertical({source_input, destination_input});
+  auto refresh = [&] {
+    try {
+      tasks = client.list_tasks();
+      if (selected >= static_cast<int>(tasks.size())) selected = 0;
+      std::string task_lines;
+      for (std::size_t index = 0; index < tasks.size(); ++index)
+        task_lines += (static_cast<int>(index) == selected ? "> " : "  ") +
+                      tasks[index].id + "\n";
+      if (task_lines.empty()) task_lines = "No tasks yet";
+      status = "r: refresh  q: quit\n\n" + task_lines;
+    } catch (const std::exception& error) {
+      status = std::string{"Daemon unavailable: "} + error.what();
+    }
+  };
+  refresh();
+  auto root = ftxui::Renderer(form, [&] {
+    auto dashboard = ftxui::hbox({
+        ftxui::vbox({ftxui::text("Tasks") | ftxui::bold, ftxui::separator(),
+                     ftxui::paragraph(status)}) |
+            ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 30),
+        ftxui::vbox({ftxui::text("Current task") | ftxui::bold, ftxui::separator(),
+                     ftxui::text("Select a task to inspect transfer state"),
+                     ftxui::separator(), ftxui::text("Program log"),
+                     ftxui::text("Daemon connected through local socket")}) |
+            ftxui::border | ftxui::flex,
+        ftxui::vbox({ftxui::text("Details / shortcuts") | ftxui::bold,
+                     ftxui::separator(), ftxui::text("Enter: start/inspect"),
+                     ftxui::text("n: new task"), ftxui::text("?: help")}) |
+            ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
+    });
+    if (!creating) return dashboard;
+    return ftxui::dbox({dashboard | ftxui::dim,
+                        ftxui::window(ftxui::text("New task"),
+                                      ftxui::vbox({source_input->Render(),
+                                                   destination_input->Render(),
+                                                   ftxui::separator(),
+                                                   ftxui::text("Enter: create  Esc: cancel")})) |
+                            ftxui::center});
+  });
+  root = ftxui::CatchEvent(root, [&](ftxui::Event event) {
+    if (event == ftxui::Event::Character('q')) {
+      screen.ExitLoopClosure()();
+      return true;
+    }
+    if (event == ftxui::Event::Character('r')) {
+      refresh();
+      return true;
+    }
+    if (event == ftxui::Event::Character('n')) {
+      creating = true;
+      return true;
+    }
+    if (event == ftxui::Event::Escape && creating) {
+      creating = false;
+      return true;
+    }
+    if (event == ftxui::Event::Return) {
+      try {
+        if (creating) {
+          (void)client.create_ready_task({source, destination});
+          source.clear();
+          destination.clear();
+          creating = false;
+          refresh();
+        } else if (!tasks.empty()) {
+          const auto& task = tasks.at(selected);
+          if (task.state == rsync_assistant::TaskState::ready) (void)client.preflight(task.id);
+          if (task.state == rsync_assistant::TaskState::awaiting_execution_confirmation) (void)client.execute(task.id);
+          refresh();
+        }
+      } catch (const std::exception& error) {
+        status = error.what();
+      }
+      return true;
+    }
+    if (!creating && event == ftxui::Event::ArrowDown && selected + 1 < static_cast<int>(tasks.size())) {
+      ++selected;
+      refresh();
+      return true;
+    }
+    if (!creating && event == ftxui::Event::ArrowUp && selected > 0) {
+      --selected;
+      refresh();
+      return true;
+    }
+    return false;
+  });
+  screen.Loop(root);
+  return 0;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  try {
+    if (argc == 3 && std::string_view{argv[1]} == "--write-default-config") {
+      const auto path = std::filesystem::absolute(argv[2]);
+      std::filesystem::create_directories(path.parent_path());
+      std::ofstream output{path};
+      output << "# rsync-assistant local settings\n"
+             << "# Keep this file owner-readable only when api_key is set.\n\n"
+             << "[transfer]\n"
+             << "dry_run = true\n"
+             << "compression = false\n"
+             << "benchmark_enabled = true\n\n"
+             << "[ai]\n"
+             << "enabled = false\n"
+             << "endpoint = \"\"\n"
+             << "model = \"\"\n"
+             << "api_key = \"\"\n";
+      if (!output) throw std::runtime_error("cannot write configuration");
+      std::cout << path << '\n';
+      return 0;
+    }
+    const auto state_dir = state_directory(argc, argv);
+    const std::string_view mode = argc >= 2 ? argv[1] : "";
+    if (mode == "daemon") return run_daemon(state_dir);
+    if (mode == "tui") return run_tui(state_dir);
+
+    pid_t started_daemon = -1;
+    try {
+      (void)rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
+    } catch (...) {
+      const pid_t child = fork();
+      if (child == 0) _exit(run_daemon(state_dir));
+      if (child < 0) throw std::runtime_error("cannot start daemon");
+      started_daemon = child;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const auto result = run_tui(state_dir);
+    if (started_daemon > 0) {
+      kill(started_daemon, SIGTERM);
+      waitpid(started_daemon, nullptr, 0);
+    }
+    return result;
+  } catch (const std::exception& error) {
+    std::cerr << "rsync-assistant: " << error.what() << '\n';
+    return 1;
+  }
+}
