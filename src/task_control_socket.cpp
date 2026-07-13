@@ -232,6 +232,7 @@ void TaskControlSocketServer::serve() {
         send_frame(client, kTaskResponse,
                    encode_task(impl_->service.create_ready_task(request)));
       } else if (type == kListTasks) {
+        impl_->service.reap_completed();
         send_frame(client, kTaskListResponse, encode_tasks(impl_->service.list_tasks()));
       } else if (type == kPreflight) {
         send_frame(client, kTaskResponse, encode_task(impl_->service.preflight(payload)));

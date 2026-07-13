@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace rsync_assistant {
@@ -32,6 +33,7 @@ class ManagedProcess {
   void pause();
   void resume();
   void stop();
+  [[nodiscard]] std::optional<ProcessResult> try_wait();
   [[nodiscard]] ProcessResult wait();
 
  private:

@@ -202,6 +202,33 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
   return tasks;
 }
 
+void TaskControlService::reap_completed() {
+  std::vector<std::pair<std::string, ProcessResult>> completed;
+  {
+    std::lock_guard lock{impl_->process_mutex};
+    for (auto it = impl_->processes.begin(); it != impl_->processes.end();) {
+      if (const auto result = it->second.try_wait()) {
+        completed.emplace_back(it->first, *result);
+        it = impl_->processes.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto& [task_id, result] : completed) {
+    Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=? WHERE id=?"};
+    const auto state = result.exit_code == 0 ? "completed" : "failed";
+    check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
+    check_sqlite(sqlite3_bind_text(statement.get(), 2, result.output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
+    check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+    check_sqlite(sqlite3_step(statement.get()), impl_->database, "reap completed task");
+  }
+  if (completed.empty()) return;
+  for (const auto& task : list_tasks())
+    if (std::any_of(completed.begin(), completed.end(), [&](const auto& entry) { return entry.first == task.id; }))
+      persist_destination_log(task);
+}
+
 std::string TaskControlService::execution_log(const std::string& task_id) const {
   Statement statement{impl_->database,
                       "SELECT command, output FROM transfer_tasks WHERE id = ?"};

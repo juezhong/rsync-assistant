@@ -57,6 +57,8 @@ void ManagedProcess::stop() {
 }
 ProcessResult ManagedProcess::wait() {
   if (!active()) return {128, ""};
+  int status = 0;
+  waitpid(pid_, &status, 0);
   std::string output;
   std::array<char, 4096> buffer{};
   ssize_t read_size;
@@ -64,10 +66,23 @@ ProcessResult ManagedProcess::wait() {
     output.append(buffer.data(), static_cast<std::size_t>(read_size));
   close(output_descriptor_);
   output_descriptor_ = -1;
-  int status = 0;
-  waitpid(pid_, &status, 0);
   pid_ = -1;
-  return {WIFEXITED(status) ? WEXITSTATUS(status) : 128, std::move(output)};
+  return ProcessResult{WIFEXITED(status) ? WEXITSTATUS(status) : 128, std::move(output)};
+}
+
+std::optional<ProcessResult> ManagedProcess::try_wait() {
+  if (!active()) return ProcessResult{128, ""};
+  int status = 0;
+  if (waitpid(pid_, &status, WNOHANG) == 0) return std::nullopt;
+  std::string output;
+  std::array<char, 4096> buffer{};
+  ssize_t read_size;
+  while ((read_size = read(output_descriptor_, buffer.data(), buffer.size())) > 0)
+    output.append(buffer.data(), static_cast<std::size_t>(read_size));
+  close(output_descriptor_);
+  output_descriptor_ = -1;
+  pid_ = -1;
+  return ProcessResult{WIFEXITED(status) ? WEXITSTATUS(status) : 128, std::move(output)};
 }
 
 }  // namespace rsync_assistant

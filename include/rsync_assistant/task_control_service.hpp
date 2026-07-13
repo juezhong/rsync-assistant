@@ -41,6 +41,7 @@ class TaskControlService {
 
   [[nodiscard]] TransferTask create_ready_task(const CreateReadyTask& request);
   [[nodiscard]] std::vector<TransferTask> list_tasks() const;
+  void reap_completed();
   [[nodiscard]] std::string execution_log(const std::string& task_id) const;
   [[nodiscard]] TransferTask preflight(const std::string& task_id);
   [[nodiscard]] TransferTask execute(const std::string& task_id,
