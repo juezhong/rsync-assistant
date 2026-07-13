@@ -262,7 +262,9 @@ int run_tui(const std::filesystem::path& state_dir,
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
   std::future<std::pair<unsigned, std::vector<rsync_assistant::PathEntry>>> browse_scan;
+  std::future<std::pair<unsigned, std::pair<std::filesystem::path, std::vector<rsync_assistant::PathEntry>>>> browse_home_scan;
   bool browse_scanning = false;
+  bool browse_home_scanning = false;
   unsigned browse_scan_generation = 0;
   int browse_selected = 0;
   bool browse_hidden = false;
@@ -378,7 +380,32 @@ int run_tui(const std::filesystem::path& state_dir,
       return std::pair{generation, std::move(entries)};
     });
   };
+  auto scan_remote_home = [&](const std::string& host) {
+    const auto generation = ++browse_scan_generation;
+    browse_home_scanning = true;
+    browse_home_scan = std::async(std::launch::async, [host, generation] {
+      const auto home = std::filesystem::path{rsync_assistant::remote_ssh_home(host)};
+      std::vector<rsync_assistant::PathEntry> entries;
+      for (const auto& path : rsync_assistant::remote_ssh_list({true, false, host, home.string()})) {
+        const bool directory = path.ends_with('/');
+        entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+      }
+      return std::pair{generation, std::pair{home, std::move(entries)}};
+    });
+  };
   auto collect_browser_scan = [&] {
+    if (browse_home_scanning && browse_home_scan.wait_for(std::chrono::milliseconds{0}) == std::future_status::ready) {
+      try {
+        auto [generation, result] = browse_home_scan.get();
+        if (generation == browse_scan_generation) {
+          browse_remote_directory = result.first;
+          browse_root = result.first;
+          browse_entries = std::move(result.second);
+          browse_selected = 0;
+        }
+      } catch (const std::exception& error) { browse_remote_host.clear(); status = error.what(); }
+      browse_home_scanning = false;
+    }
     if (!browse_scanning || browse_scan.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready) return;
     try {
       auto [generation, entries] = browse_scan.get();
@@ -500,7 +527,7 @@ int run_tui(const std::filesystem::path& state_dir,
       std::string entries = browse_destination ? "h: parent  l: enter  /: search  g: hidden  i: ignored  Enter: select\n\n" :
                                                  "h: parent  l: enter  /: search  g: hidden  i: ignored  Space: toggle  F: flatten  Enter: confirm\n\n";
       if (browse_search) entries += "Search: " + browse_query + " (Enter: apply, Esc: cancel)\n";
-      if (browse_scanning) entries += "Scanning…\n";
+      if (browse_scanning || browse_home_scanning) entries += "Scanning…\n";
       if (browse_remote && browse_remote_host.empty()) {
         entries += "SSH Host (choose with j/k + Enter, or type manual host below):\n";
         for (std::size_t index = 0; index < browse_ssh_hosts.size(); ++index)
@@ -711,6 +738,10 @@ int run_tui(const std::filesystem::path& state_dir,
       return true;
     }
     if (browsing) {
+      if (browse_home_scanning) {
+        if (event == ftxui::Event::Escape) { browsing = false; active_form = wizard_step + 1; }
+        return true;
+      }
       if (known_host_confirming) {
         if (event == ftxui::Event::Escape) { known_host_confirming = false; known_host_confirmation.clear(); return true; }
         if (event == ftxui::Event::Return) {
@@ -732,15 +763,10 @@ int run_tui(const std::filesystem::path& state_dir,
         if (event == ftxui::Event::Return) {
           if (browse_manual_host.empty() && !browse_ssh_hosts.empty()) browse_manual_host = browse_ssh_hosts.at(browse_selected);
           if (browse_manual_host.empty()) { status = "Choose or enter an SSH Host"; return true; }
-          try {
-            browse_remote_host = browse_manual_host;
-            browse_remote_directory = rsync_assistant::remote_ssh_home(browse_remote_host);
-            browse_root = browse_remote_directory;
-            browse_remote_prefix = browse_remote_host + ":";
-            browse_entries.clear();
-            scan_remote_browser({true, false, browse_remote_host, browse_remote_directory.string()});
-            browse_selected = 0;
-          } catch (const std::exception& error) { browse_remote_host.clear(); status = error.what(); }
+          browse_remote_host = browse_manual_host;
+          browse_remote_prefix = browse_remote_host + ":";
+          browse_entries.clear();
+          scan_remote_home(browse_remote_host);
           return true;
         }
         if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_ssh_hosts.size())) { ++browse_selected; return true; }
