@@ -20,7 +20,7 @@ find_package(SQLite3 REQUIRED)
 set(RSYNC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rsync")
 set(RSYNC_BUILD_DIR "${CMAKE_BINARY_DIR}/private-rsync")
 set(RSYNC_BINARY "${RSYNC_BUILD_DIR}/rsync")
-find_program(RSYNC_ASSISTANT_SYSTEM_RSYNC NAMES rsync REQUIRED)
+find_program(RSYNC_ASSISTANT_SYSTEM_RSYNC NAMES rsync)
 find_program(RSYNC_ASSISTANT_SSH NAMES ssh REQUIRED)
 find_program(RSYNC_ASSISTANT_SCP NAMES scp REQUIRED)
 find_program(RSYNC_ASSISTANT_FD NAMES fd)
@@ -33,6 +33,13 @@ endif()
 option(RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC
        "Build the pinned rsync submodule instead of using the system rsync"
        ${RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC_DEFAULT})
+
+if(NOT RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC AND NOT RSYNC_ASSISTANT_SYSTEM_RSYNC)
+  message(FATAL_ERROR "No system rsync was found. Enable RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC or install rsync.")
+endif()
+if(RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC AND NOT EXISTS "${RSYNC_SOURCE_DIR}/configure" AND NOT RSYNC_ASSISTANT_SYSTEM_RSYNC)
+  message(FATAL_ERROR "Bundled rsync source is unavailable and no system rsync was found. Initialize third_party/rsync or install rsync.")
+endif()
 
 if(RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC AND EXISTS "${RSYNC_SOURCE_DIR}/configure")
   add_custom_command(
