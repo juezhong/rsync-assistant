@@ -3,4 +3,6 @@ CONTEXT.md
 docs/
 .scratch/
 build/
-tests/
+tests/*
+!tests/endpoint_test.cpp
+!tests/task_control_service_test.cpp

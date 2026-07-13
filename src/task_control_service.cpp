@@ -222,6 +222,8 @@ TransferTask TaskControlService::create_ready_task(
     SelectionManifest manifest{source_endpoint.path, {}, request.flatten_selection};
     std::unordered_set<std::string> flattened_names;
     for (const auto& value : request.selected_relative_paths) {
+      if (source_endpoint.remote && value.find(':') != std::string::npos)
+        throw std::invalid_argument("remote Source selections must use one SSH Host; create separate tasks");
       const std::filesystem::path relative{value};
       if (request.flatten_selection && !flattened_names.insert(relative.filename().string()).second)
         throw std::invalid_argument("flattened selections must not have duplicate file names");

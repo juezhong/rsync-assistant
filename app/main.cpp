@@ -552,6 +552,7 @@ int run_tui(const std::filesystem::path& state_dir,
     if (wizard_step == 0) {
       contents = {ftxui::text("Step 1/4: Source"), source_input->Render(),
                   ftxui::text("The Source is read from. It may be local or remote."),
+                  ftxui::text("A Source uses one SSH Host; use separate tasks for different Hosts."),
                   ftxui::text("F2: browse local source  F3: browse remote source"),
                   ftxui::text("Enter: next  Esc: cancel")};
     } else if (wizard_step == 1) {
