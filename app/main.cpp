@@ -197,11 +197,19 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
   auto settings_compression = ftxui::Checkbox("Default compression", &settings.compression);
   auto settings_benchmark = ftxui::Checkbox("Enable benchmarks", &settings.benchmark_enabled);
+  std::string settings_benchmark_size = std::to_string(settings.benchmark_size_mib);
+  std::string settings_benchmark_timeout = std::to_string(settings.benchmark_timeout_seconds);
+  std::string settings_benchmark_cache = std::to_string(settings.benchmark_cache_hours);
+  std::string settings_benchmark_threshold = std::to_string(settings.daemon_advantage_threshold);
+  auto settings_benchmark_size_input = ftxui::Input(&settings_benchmark_size, "MiB");
+  auto settings_benchmark_timeout_input = ftxui::Input(&settings_benchmark_timeout, "seconds");
+  auto settings_benchmark_cache_input = ftxui::Input(&settings_benchmark_cache, "hours");
+  auto settings_benchmark_threshold_input = ftxui::Input(&settings_benchmark_threshold, "ratio");
   auto settings_ai_enabled = ftxui::Checkbox("Enable AI explanations", &settings.ai_enabled);
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     if (browse_search && !browse_query.empty()) {
       browse_entries.clear();
@@ -299,7 +307,11 @@ int run_tui(const std::filesystem::path& state_dir,
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Settings"),
                                         ftxui::vbox({settings_dry_run->Render(), settings_compression->Render(),
-                                                     settings_benchmark->Render(), settings_ai_enabled->Render(),
+                                                     settings_benchmark->Render(), ftxui::text("Benchmark payload MiB:"), settings_benchmark_size_input->Render(),
+                                                     ftxui::text("Benchmark timeout seconds:"), settings_benchmark_timeout_input->Render(),
+                                                     ftxui::text("Benchmark cache hours:"), settings_benchmark_cache_input->Render(),
+                                                     ftxui::text("Daemon advantage ratio:"), settings_benchmark_threshold_input->Render(),
+                                                     settings_ai_enabled->Render(),
                                                      settings_ai_endpoint->Render(), settings_ai_model->Render(),
                                                      settings_api_key->Render(), ftxui::separator(),
                                                      ftxui::text("Ctrl-S: save  Esc: close"),
@@ -386,7 +398,17 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (!creating && event == ftxui::Event::Character('s')) { settings_open = true; return true; }
     if (settings_open && event == ftxui::Event::CtrlS) {
-      try { settings.save(settings_path); status = "Settings saved: " + settings_path.string(); }
+      try {
+        settings.benchmark_size_mib = static_cast<unsigned>(std::stoul(settings_benchmark_size));
+        settings.benchmark_timeout_seconds = static_cast<unsigned>(std::stoul(settings_benchmark_timeout));
+        settings.benchmark_cache_hours = static_cast<unsigned>(std::stoul(settings_benchmark_cache));
+        settings.daemon_advantage_threshold = std::stod(settings_benchmark_threshold);
+        if (settings.benchmark_size_mib == 0 || settings.benchmark_timeout_seconds == 0 ||
+            settings.benchmark_cache_hours == 0 || settings.daemon_advantage_threshold < 1.0 ||
+            settings.daemon_advantage_threshold > 10.0)
+          throw std::runtime_error("benchmark settings must be positive; advantage ratio is 1.0 to 10.0");
+        settings.save(settings_path); status = "Settings saved: " + settings_path.string();
+      }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
@@ -725,6 +747,13 @@ int main(int argc, char* argv[]) {
              << "dry_run = true\n"
              << "compression = false\n"
              << "benchmark_enabled = true\n\n"
+             << "[benchmark]\n"
+             << "# Temporary benchmark payload size; it is never written into user source directories.\n"
+             << "size_mib = 64\n"
+             << "timeout_seconds = 15\n"
+             << "cache_hours = 24\n"
+             << "# Direct daemon must be at least this multiple faster than SSH.\n"
+             << "daemon_advantage_threshold = 1.1\n\n"
              << "[ai]\n"
              << "enabled = false\n"
              << "endpoint = \"\"\n"
