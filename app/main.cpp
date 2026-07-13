@@ -140,9 +140,19 @@ int run_tui(const std::filesystem::path& state_dir,
         if (state == rsync_assistant::TaskState::interrupted) return "Interrupted";
         return "Failed";
       };
+      const auto method_label = [](rsync_assistant::TransferMethod method) {
+        if (method == rsync_assistant::TransferMethod::rsync_daemon) return "daemon";
+        if (method == rsync_assistant::TransferMethod::rsync_ssh) return "rsync-ssh";
+        if (method == rsync_assistant::TransferMethod::scp) return "scp";
+        return "local";
+      };
       for (std::size_t index = 0; index < tasks.size(); ++index)
         task_lines += (static_cast<int>(index) == selected ? "> " : "  ") +
                       std::string{label(tasks[index].state)} + " " + tasks[index].id + "\n";
+      for (std::size_t index = 0; index < tasks.size(); ++index) {
+        const auto marker = static_cast<int>(index) == selected ? "> " : "  ";
+        task_lines += marker + std::string{"  via "} + method_label(tasks[index].method) + "\n";
+      }
       if (task_lines.empty()) task_lines = "No tasks yet";
       status = "r: refresh  q: quit\n\n" + task_lines;
     } catch (const std::exception& error) {
@@ -413,6 +423,8 @@ int run_tui(const std::filesystem::path& state_dir,
     if (!creating && !tasks.empty() && event == ftxui::Event::Character('p')) {
       try {
         const auto& task = tasks.at(selected);
+        if (task.method == rsync_assistant::TransferMethod::scp)
+          throw std::runtime_error("scp tasks do not offer resumable pause controls");
         if (task.state == rsync_assistant::TaskState::running) (void)client.pause(task.id);
         if (task.state == rsync_assistant::TaskState::paused) (void)client.resume(task.id);
         refresh();
@@ -430,7 +442,11 @@ int run_tui(const std::filesystem::path& state_dir,
       return true;
     }
     if (!creating && !tasks.empty() && event == ftxui::Event::Character('e')) {
-      try { (void)client.restart(tasks.at(selected).id); refresh(); }
+      try {
+        if (tasks.at(selected).method == rsync_assistant::TransferMethod::scp)
+          throw std::runtime_error("scp tasks cannot claim rsync restart/resume behavior");
+        (void)client.restart(tasks.at(selected).id); refresh();
+      }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
