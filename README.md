@@ -12,7 +12,33 @@
 
 ## 快速开始
 
-需要：CMake 3.20+、C++20 编译器、`make`、OpenSSH（`ssh`/`scp`）和 `rsync`。首次配置还会从 GitHub 下载 FTXUI。
+需要：CMake 3.20+、C++20 编译器、`make`、SQLite **开发文件**、OpenSSH（`ssh`/`scp`）和 `rsync`。首次配置还会从 GitHub 下载 FTXUI。
+
+克隆后先取得固定版本的 rsync 子模块：
+
+```sh
+git clone --recurse-submodules git@github.com:juezhong/rsync-assistant.git
+cd rsync-assistant
+```
+
+如果已经克隆过仓库：
+
+```sh
+git submodule update --init --recursive
+```
+
+常见 Linux 依赖安装命令：
+
+```sh
+# Debian / Ubuntu
+sudo apt install build-essential cmake git make libsqlite3-dev rsync openssh-client
+
+# Fedora / RHEL
+sudo dnf install gcc-c++ cmake git make sqlite-devel rsync openssh-clients
+
+# Arch Linux
+sudo pacman -S --needed base-devel cmake git sqlite rsync openssh
+```
 
 macOS 当前默认使用系统 `rsync` 进行构建测试：
 
@@ -30,6 +56,42 @@ Linux 默认同时构建 `third_party/rsync` 中固定版本的私有 rsync：
 
 ```sh
 cmake -S . -B build
+cmake --build build --parallel
+```
+
+## 构建排错
+
+### `Could NOT find SQLite3 (missing: SQLite3_INCLUDE_DIR SQLite3_LIBRARY)`
+
+系统只安装了 SQLite 运行库，缺少头文件和链接库。安装发行版对应的 SQLite 开发包后，删除旧构建目录再重试：Debian/Ubuntu 使用 `libsqlite3-dev`，Fedora/RHEL 使用 `sqlite-devel`，Arch 使用 `sqlite`。
+
+```sh
+rm -rf build
+./scripts/build-linux.sh
+```
+
+### `Found SQLite3 ... but target SQLite3::SQLite3 was not found`
+
+这是部分 Linux 发行版携带的旧版 CMake `FindSQLite3` 模块只提供变量、不提供导入 target 的兼容性问题。请拉取包含兼容修复的最新 `main`，然后清理并重新配置：
+
+```sh
+git pull --ff-only
+rm -rf build
+./scripts/build-linux.sh
+```
+
+当前构建脚本同时兼容 `SQLite::SQLite3`、`SQLite3::SQLite3` 和只有变量的 FindSQLite3 模块。
+
+### FTXUI 下载失败
+
+首次 CMake 配置会通过 Git 下载 FTXUI。确认该机器可访问 GitHub，或在已联网的环境预先完成一次 CMake 配置后再使用同一个 `build/` 目录。
+
+### 私有 rsync 构建失败
+
+Linux 默认构建 `third_party/rsync`。先确认子模块已初始化、C/C++ 编译器和 `make` 已安装；如仅需临时使用系统 rsync，可明确回退：
+
+```sh
+cmake -S . -B build -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC=OFF
 cmake --build build --parallel
 ```
 

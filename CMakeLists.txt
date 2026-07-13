@@ -16,6 +16,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
+if(TARGET SQLite3::SQLite3)
+  # Some package managers provide a config package with this spelling.
+  set(RSYNC_ASSISTANT_SQLITE_TARGET SQLite3::SQLite3)
+elseif(TARGET SQLite::SQLite3)
+  # Older CMake FindSQLite3 modules use this spelling.
+  set(RSYNC_ASSISTANT_SQLITE_TARGET SQLite::SQLite3)
+else()
+  # Older CMake FindSQLite3 modules only populate variables.  Keep the project
+  # buildable on distribution CMake packages that predate the imported target.
+  add_library(rsync_assistant_sqlite INTERFACE)
+  target_include_directories(rsync_assistant_sqlite INTERFACE
+    "${SQLite3_INCLUDE_DIRS}" "${SQLite3_INCLUDE_DIR}")
+  target_link_libraries(rsync_assistant_sqlite INTERFACE "${SQLite3_LIBRARIES}" "${SQLite3_LIBRARY}")
+  set(RSYNC_ASSISTANT_SQLITE_TARGET rsync_assistant_sqlite)
+endif()
 
 set(RSYNC_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rsync")
 set(RSYNC_BUILD_DIR "${CMAKE_BINARY_DIR}/private-rsync")
@@ -75,7 +90,7 @@ add_library(rsync_assistant_core
 )
 
 target_include_directories(rsync_assistant_core PUBLIC include)
-target_link_libraries(rsync_assistant_core PUBLIC SQLite3::SQLite3)
+target_link_libraries(rsync_assistant_core PUBLIC ${RSYNC_ASSISTANT_SQLITE_TARGET})
 
 add_executable(rsync-assistant app/main.cpp)
 target_link_libraries(rsync-assistant PRIVATE rsync_assistant_core)
