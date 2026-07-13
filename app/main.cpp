@@ -365,6 +365,19 @@ int run_tui(const std::filesystem::path& state_dir,
       return std::pair{generation, std::move(entries)};
     });
   };
+  auto scan_remote_browser = [&](const rsync_assistant::Endpoint& endpoint) {
+    if (browse_scanning) return;
+    const auto generation = ++browse_scan_generation;
+    browse_scanning = true;
+    browse_scan = std::async(std::launch::async, [endpoint, generation] {
+      std::vector<rsync_assistant::PathEntry> entries;
+      for (const auto& path : rsync_assistant::remote_ssh_list(endpoint)) {
+        const bool directory = path.ends_with('/');
+        entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+      }
+      return std::pair{generation, std::move(entries)};
+    });
+  };
   auto collect_browser_scan = [&] {
     if (!browse_scanning || browse_scan.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready) return;
     try {
@@ -636,18 +649,14 @@ int run_tui(const std::filesystem::path& state_dir,
       browse_selected = 0;
       try {
         if (endpoint.remote) {
-          ++browse_scan_generation;
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_ssh_list(endpoint)) {
-            const bool directory = path.ends_with('/');
-            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
-          }
           browse_remote = true;
           browse_remote_prefix = endpoint.host + ":";
           browse_remote_host = endpoint.host;
           browse_remote_directory = endpoint.path;
           browse_root = endpoint.path;
           browse_selected_paths.clear();
+          scan_remote_browser(endpoint);
         } else {
           const auto& value = browse_destination ? destination : source;
           browse_directory = value.empty() ? std::filesystem::current_path() : std::filesystem::path{value};
@@ -671,7 +680,6 @@ int run_tui(const std::filesystem::path& state_dir,
       browse_selected = 0;
       try {
         if (endpoint.remote || (browse_destination ? destination : source).empty()) {
-          ++browse_scan_generation;
           if (!endpoint.remote) {
             browse_remote = true;
             browse_remote_host.clear();
@@ -684,16 +692,13 @@ int run_tui(const std::filesystem::path& state_dir,
             return true;
           }
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_ssh_list(endpoint)) {
-            const bool directory = path.ends_with('/');
-            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
-          }
           browse_remote = true;
           browse_remote_prefix = endpoint.host + ":";
           browse_remote_host = endpoint.host;
           browse_remote_directory = endpoint.path;
           browse_root = endpoint.path;
           browse_selected_paths.clear();
+          scan_remote_browser(endpoint);
         } else {
           const auto& value = browse_destination ? destination : source;
           browse_directory = value.empty() ? std::filesystem::current_path() : std::filesystem::path{value};
@@ -733,10 +738,7 @@ int run_tui(const std::filesystem::path& state_dir,
             browse_root = browse_remote_directory;
             browse_remote_prefix = browse_remote_host + ":";
             browse_entries.clear();
-            for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
-              const bool directory = path.ends_with('/');
-              browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
-            }
+            scan_remote_browser({true, false, browse_remote_host, browse_remote_directory.string()});
             browse_selected = 0;
           } catch (const std::exception& error) { browse_remote_host.clear(); status = error.what(); }
           return true;
@@ -772,10 +774,7 @@ int run_tui(const std::filesystem::path& state_dir,
         } else {
           browse_remote_directory = browse_remote_directory.parent_path();
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
-            const bool directory = path.ends_with('/');
-            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
-          }
+          scan_remote_browser({true, false, browse_remote_host, browse_remote_directory.string()});
         }
         browse_selected = 0;
         return true;
@@ -789,10 +788,7 @@ int run_tui(const std::filesystem::path& state_dir,
             const auto next_directory = browse_entries.at(browse_selected).path;
             browse_entries.clear();
             browse_remote_directory = next_directory;
-            for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
-              const bool directory = path.ends_with('/');
-              browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
-            }
+            scan_remote_browser({true, false, browse_remote_host, browse_remote_directory.string()});
           }
           browse_selected = 0;
         }
