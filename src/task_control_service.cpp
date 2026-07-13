@@ -3,6 +3,7 @@
 #include "rsync_assistant/process_runner.hpp"
 #include "rsync_assistant/rsync_locator.hpp"
 #include "rsync_assistant/endpoint.hpp"
+#include "rsync_assistant/project_profile.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -158,10 +159,18 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial", "--dry-run"};
   if (it->delete_extraneous) arguments.push_back("--delete");
+  if (!source_endpoint.remote) {
+    for (const auto& exclusion : detect_project_profile(source_endpoint.path).exclusions) {
+      arguments.push_back("--exclude");
+      arguments.push_back(exclusion);
+    }
+  }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
   const auto result = ProcessRunner{}.run(arguments);
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
-  const auto command = rsync + " --recursive --links --times --partial --dry-run -- " + it->source + " " + it->destination;
+  const auto command = rsync + " --recursive --links --times --partial --dry-run" +
+                       std::string{it->delete_extraneous ? " --delete" : ""} +
+                       " -- " + it->source + " " + it->destination;
   Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
@@ -180,6 +189,13 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
   if (it->delete_extraneous) arguments.push_back("--delete");
+  const auto local_source = parse_endpoint(it->source);
+  if (!local_source.remote) {
+    for (const auto& exclusion : detect_project_profile(local_source.path).exclusions) {
+      arguments.push_back("--exclude");
+      arguments.push_back(exclusion);
+    }
+  }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
   auto process = ProcessRunner{}.start(arguments);
   {

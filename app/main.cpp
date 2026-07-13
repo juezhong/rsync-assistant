@@ -1,4 +1,5 @@
 #include "rsync_assistant/task_control_socket.hpp"
+#include "rsync_assistant/directory_scanner.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -40,10 +41,18 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::string source;
   std::string destination;
   bool delete_extraneous = false;
+  bool browsing = false;
+  std::filesystem::path browse_directory = std::filesystem::current_path();
+  std::vector<rsync_assistant::PathEntry> browse_entries;
+  int browse_selected = 0;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto form = ftxui::Container::Vertical({source_input, destination_input, delete_checkbox});
+  auto scan_browser = [&] {
+    browse_entries = rsync_assistant::scan_directory_level(browse_directory);
+    if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
+  };
   auto refresh = [&] {
     try {
       tasks = client.list_tasks();
@@ -86,6 +95,17 @@ int run_tui(const std::filesystem::path& state_dir) {
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
     if (!creating) return dashboard;
+    if (browsing) {
+      std::string entries = "h: parent  l: enter  Space/Enter: select\n\n";
+      entries += browse_directory.string() + "\n";
+      for (std::size_t index = 0; index < browse_entries.size(); ++index)
+        entries += (static_cast<int>(index) == browse_selected ? "> " : "  ") +
+                   browse_entries[index].path.filename().string() +
+                   (browse_entries[index].directory ? "/\n" : "\n");
+      return ftxui::dbox({dashboard | ftxui::dim,
+                          ftxui::window(ftxui::text("Select source path"),
+                                        ftxui::paragraph(entries)) | ftxui::center});
+    }
     return ftxui::dbox({dashboard | ftxui::dim,
                         ftxui::window(ftxui::text("New task"),
                                       ftxui::vbox({source_input->Render(),
@@ -108,7 +128,29 @@ int run_tui(const std::filesystem::path& state_dir) {
       creating = true;
       return true;
     }
-    if (event == ftxui::Event::Escape && creating) {
+    if (creating && event == ftxui::Event::Character('b')) {
+      browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
+      browse_selected = 0;
+      try { scan_browser(); browsing = true; } catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (browsing) {
+      if (event == ftxui::Event::Escape) { browsing = false; return true; }
+      if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_entries.size())) { ++browse_selected; return true; }
+      if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
+      if (event == ftxui::Event::Character('h')) { browse_directory = browse_directory.parent_path(); browse_selected = 0; scan_browser(); return true; }
+      if (!browse_entries.empty() && (event == ftxui::Event::Character('l'))) {
+        if (browse_entries.at(browse_selected).directory) { browse_directory = browse_entries.at(browse_selected).path; browse_selected = 0; scan_browser(); }
+        return true;
+      }
+      if (!browse_entries.empty() && (event == ftxui::Event::Return || event == ftxui::Event::Character(' '))) {
+        source = browse_entries.at(browse_selected).path.string();
+        browsing = false;
+        return true;
+      }
+      return true;
+    }
+    if (event == ftxui::Event::Escape && creating && !browsing) {
       creating = false;
       return true;
     }
