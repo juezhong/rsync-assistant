@@ -58,6 +58,7 @@ add_library(rsync_assistant_core
   src/project_profile.cpp
   src/endpoint.cpp
   src/directory_scanner.cpp
+  src/selection_manifest.cpp
   src/settings.cpp
   src/task_control_socket.cpp
   src/task_control_service.cpp
