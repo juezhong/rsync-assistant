@@ -8,6 +8,7 @@ enum class TransportMethod { rsync_daemon, rsync_ssh, scp_fallback, unavailable 
 
 struct TransportCapabilities {
   bool daemon_available = false;
+  bool daemon_trusted = false;
   bool ssh_rsync_available = false;
   bool scp_available = false;
   std::optional<double> daemon_megabytes_per_second;
