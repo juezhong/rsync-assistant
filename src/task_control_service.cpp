@@ -3,6 +3,9 @@
 #include "rsync_assistant/process_runner.hpp"
 #include "rsync_assistant/rsync_locator.hpp"
 #include "rsync_assistant/endpoint.hpp"
+#include "rsync_assistant/endpoint_benchmark.hpp"
+#include "rsync_assistant/benchmark_cache.hpp"
+#include "rsync_assistant/transport_selector.hpp"
 #include "rsync_assistant/project_profile.hpp"
 #include "rsync_assistant/selection_manifest.hpp"
 
@@ -15,6 +18,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <thread>
 #include <sqlite3.h>
 #include <stdexcept>
 #include <string_view>
@@ -108,9 +112,11 @@ struct TaskControlService::Impl {
   std::filesystem::path state_directory;
   std::mutex process_mutex;
   std::unordered_map<std::string, ManagedProcess> processes;
+  Settings settings;
 
-  explicit Impl(const std::filesystem::path& database_path)
-      : state_directory(database_path.parent_path()) {
+  explicit Impl(const std::filesystem::path& database_path, Settings configured_settings)
+      : state_directory(database_path.parent_path()), settings(std::move(configured_settings)) {
+    settings.validate();
     check_sqlite(sqlite3_open_v2(database_path.c_str(), &database,
                                  SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
                                      SQLITE_OPEN_FULLMUTEX,
@@ -161,6 +167,9 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN include_project_ignored INTEGER NOT NULL DEFAULT 0",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN ssh_destination TEXT NOT NULL DEFAULT ''",
+                 nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
                               "WHERE state IN ('running', 'paused')",
@@ -171,8 +180,9 @@ struct TaskControlService::Impl {
   ~Impl() { sqlite3_close(database); }
 };
 
-TaskControlService::TaskControlService(const std::filesystem::path& database_path)
-    : impl_(std::make_unique<Impl>(database_path)) {}
+TaskControlService::TaskControlService(const std::filesystem::path& database_path,
+                                       Settings settings)
+    : impl_(std::make_unique<Impl>(database_path, std::move(settings))) {}
 
 TaskControlService::~TaskControlService() = default;
 
@@ -185,6 +195,12 @@ TransferTask TaskControlService::create_ready_task(
   const auto id = next_task_id();
   const auto source_endpoint = parse_endpoint(request.source);
   const auto destination_endpoint = parse_endpoint(request.destination);
+  if (!request.ssh_destination.empty()) {
+    const auto ssh_destination = parse_endpoint(request.ssh_destination);
+    if (!destination_endpoint.rsync_daemon || !ssh_destination.remote || ssh_destination.rsync_daemon ||
+        ssh_destination.host != destination_endpoint.host)
+      throw std::invalid_argument("paired SSH destination must target the same direct-daemon host");
+  }
   const std::string method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
                              (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
   const auto task_method = method == "rsync_daemon" ? TransferMethod::rsync_daemon :
@@ -234,8 +250,8 @@ TransferTask TaskControlService::create_ready_task(
   proposal.insert(proposal.end(), {"--", request.source, request.destination});
   const auto command = render_command(proposal);
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection, include_git_data, include_project_ignored) "
-                      "VALUES (?, ?, ?, 'ready', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection, include_git_data, include_project_ignored, ssh_destination) "
+                      "VALUES (?, ?, ?, 'ready', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -263,7 +279,31 @@ TransferTask TaskControlService::create_ready_task(
   check_sqlite(sqlite3_bind_int(statement.get(), 12, request.flatten_selection), impl_->database, "bind flatten selection");
   check_sqlite(sqlite3_bind_int(statement.get(), 13, request.include_git_data), impl_->database, "bind git inclusion");
   check_sqlite(sqlite3_bind_int(statement.get(), 14, request.include_project_ignored), impl_->database, "bind project ignored inclusion");
+  check_sqlite(sqlite3_bind_text(statement.get(), 15, request.ssh_destination.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind paired SSH destination");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
+  // This is intentionally detached from task creation/preflight: the data path remains
+  // usable when the control channel, cache, or benchmark itself is unavailable.
+  if (request.trusted_daemon && impl_->settings.benchmark_enabled &&
+      !source_endpoint.remote && destination_endpoint.rsync_daemon) {
+    const auto state_directory = impl_->state_directory;
+    const auto settings = impl_->settings;
+    const auto daemon_endpoint = destination_endpoint;
+    std::thread{[state_directory, settings, daemon_endpoint] {
+      try {
+        const auto cache_key = daemon_endpoint.host + "::" + daemon_endpoint.path;
+        BenchmarkCache cache{state_directory / "benchmarks.sqlite3"};
+        if (cache.find_fresh(cache_key, std::chrono::hours{settings.benchmark_cache_hours})) return;
+        const Endpoint ssh_endpoint{true, false, daemon_endpoint.host, {}};
+        if (!remote_assistant_available(ssh_endpoint) || !remote_rsync_available(ssh_endpoint)) return;
+        if (const auto result = measure_endpoint_pair({ssh_endpoint, daemon_endpoint, state_directory,
+                                                       settings.benchmark_size_mib,
+                                                       std::chrono::seconds{settings.benchmark_timeout_seconds}}))
+          cache.store(cache_key, *result);
+      } catch (...) {
+        // A benchmark is advisory.  Its failures must not change a task's lifecycle.
+      }
+    }}.detach();
+  }
   return {id, request.source, request.destination, TaskState::ready, command, "", request.delete_extraneous, request.compression, request.dry_run, task_method, request.selected_relative_paths.size(), request.flatten_selection};
 }
 
@@ -360,15 +400,50 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   }
   const auto source_endpoint = parse_endpoint(it->source);
   const auto destination_endpoint = parse_endpoint(it->destination);
+  std::string effective_destination = it->destination;
+  TransferMethod effective_method = it->method;
+  bool daemon_trusted = false;
+  std::string paired_ssh_destination;
+  {
+    Statement paired{impl_->database, "SELECT trusted_daemon, ssh_destination FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(paired.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    if (sqlite3_step(paired.get()) == SQLITE_ROW) {
+      daemon_trusted = sqlite3_column_int(paired.get(), 0) != 0;
+      const auto* text = sqlite3_column_text(paired.get(), 1);
+      paired_ssh_destination = text == nullptr ? "" : reinterpret_cast<const char*>(text);
+    }
+  }
   const auto remote_endpoint = source_endpoint.remote ? source_endpoint : destination_endpoint;
   if (remote_endpoint.rsync_daemon) {
-    Statement trust{impl_->database, "SELECT trusted_daemon FROM transfer_tasks WHERE id=?"};
-    check_sqlite(sqlite3_bind_text(trust.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
-    if (sqlite3_step(trust.get()) != SQLITE_ROW || sqlite3_column_int(trust.get(), 0) == 0)
+    if (!daemon_trusted && paired_ssh_destination.empty())
       throw std::runtime_error("direct rsync daemon requires explicit trusted-LAN authorization");
   }
-  if (remote_endpoint.remote && !remote_rsync_available(remote_endpoint))
+  const bool primary_available = !remote_endpoint.remote || remote_rsync_available(remote_endpoint);
+  if (!primary_available && paired_ssh_destination.empty())
     throw std::runtime_error("remote rsync is unavailable; confirm system scp fallback explicitly");
+  if (!source_endpoint.remote && destination_endpoint.rsync_daemon) {
+    if (!paired_ssh_destination.empty()) {
+        const auto ssh_endpoint = parse_endpoint(paired_ssh_destination);
+        if (!remote_rsync_available(ssh_endpoint))
+          throw std::runtime_error("paired SSH endpoint has no usable remote rsync");
+        TransportCapabilities capabilities;
+        capabilities.daemon_available = primary_available;
+        capabilities.daemon_trusted = daemon_trusted;
+        capabilities.ssh_rsync_available = true;
+        if (impl_->settings.benchmark_enabled) {
+          BenchmarkCache cache{impl_->state_directory / "benchmarks.sqlite3"};
+          if (const auto benchmark = cache.find_fresh(destination_endpoint.host + "::" + destination_endpoint.path,
+                                                       std::chrono::hours{impl_->settings.benchmark_cache_hours})) {
+            capabilities.daemon_megabytes_per_second = benchmark->daemon_megabytes_per_second;
+            capabilities.ssh_megabytes_per_second = benchmark->ssh_megabytes_per_second;
+          }
+        }
+        if (select_transport(capabilities, impl_->settings.daemon_advantage_threshold) == TransportMethod::rsync_ssh) {
+          effective_destination = paired_ssh_destination;
+          effective_method = TransferMethod::rsync_ssh;
+        }
+    }
+  }
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
   if (it->delete_extraneous) arguments.push_back("--delete");
@@ -404,7 +479,7 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
       }
     }
   }
-  arguments.insert(arguments.end(), {"--", it->source, it->destination});
+  arguments.insert(arguments.end(), {"--", it->source, effective_destination});
   const auto command = render_command(arguments);
   auto preflight_arguments = arguments;
   preflight_arguments.insert(preflight_arguments.begin() + 5, "--dry-run");
@@ -412,13 +487,16 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto result = it->dry_run ? ProcessRunner{}.run(preflight_arguments) :
                                   ProcessResult{0, "Dry-run disabled by task settings; command is ready for confirmation.\n"};
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=?, exit_code=? WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=?, exit_code=?, method=?, destination=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
   const auto output = result.output + (it->delete_extraneous && it->dry_run ? deletion_summary(result.output) : "");
   check_sqlite(sqlite3_bind_text(statement.get(), 3, output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
   check_sqlite(sqlite3_bind_int(statement.get(), 4, result.exit_code), impl_->database, "bind exit code");
-  check_sqlite(sqlite3_bind_text(statement.get(), 5, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+  const auto method_text = effective_method == TransferMethod::rsync_ssh ? "rsync_ssh" : "rsync_daemon";
+  check_sqlite(sqlite3_bind_text(statement.get(), 5, method_text, -1, SQLITE_TRANSIENT), impl_->database, "bind method");
+  check_sqlite(sqlite3_bind_text(statement.get(), 6, effective_destination.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind effective destination");
+  check_sqlite(sqlite3_bind_text(statement.get(), 7, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update preflight");
   return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
 }

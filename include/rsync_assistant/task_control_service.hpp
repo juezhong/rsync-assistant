@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "rsync_assistant/settings.hpp"
+
 namespace rsync_assistant {
 
 enum class TaskState { ready, preflighting, awaiting_execution_confirmation, running, paused, completed, failed, cancelled, interrupted };
@@ -18,6 +20,9 @@ struct CreateReadyTask {
   bool compression = false;
   bool dry_run = true;
   bool trusted_daemon = false;
+  // Optional SSH spelling of a direct-daemon destination.  It is never inferred
+  // from a daemon module path because that mapping is deployment-specific.
+  std::string ssh_destination;
   // Paths are relative to source.  An empty list transfers the whole source.
   std::vector<std::string> selected_relative_paths;
   bool flatten_selection = false;
@@ -43,7 +48,8 @@ struct TransferTask {
 
 class TaskControlService {
  public:
-  explicit TaskControlService(const std::filesystem::path& database_path);
+  explicit TaskControlService(const std::filesystem::path& database_path,
+                              Settings settings = {});
   ~TaskControlService();
 
   TaskControlService(const TaskControlService&) = delete;

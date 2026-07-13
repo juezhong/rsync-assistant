@@ -169,7 +169,8 @@ bool valid_benchmark_token(std::string_view token) {
   });
 }
 
-int run_daemon(const std::filesystem::path& state_dir) {
+int run_daemon(const std::filesystem::path& state_dir,
+               const rsync_assistant::Settings& settings) {
   std::filesystem::create_directories(state_dir);
   DaemonLock daemon_lock{state_dir};
   const auto daemon_root = state_dir / "managed-rsync-root";
@@ -201,7 +202,7 @@ int run_daemon(const std::filesystem::path& state_dir) {
   } catch (const std::exception& error) {
     std::cerr << "rsync-assistant: managed loopback rsync daemon unavailable: " << error.what() << '\n';
   }
-  rsync_assistant::TaskControlService service{state_dir / "tasks.sqlite3"};
+  rsync_assistant::TaskControlService service{state_dir / "tasks.sqlite3", settings};
   rsync_assistant::TaskControlSocketServer server{service, state_dir / "control.sock"};
   daemon_stop_requested = 0;
   signal(SIGINT, request_daemon_stop);
@@ -234,6 +235,7 @@ int run_tui(const std::filesystem::path& state_dir,
   int wizard_step = 0;
   std::string source;
   std::string destination;
+  std::string ssh_destination;
   std::vector<std::string> selected_source_paths;
   bool flatten_selection = false;
   bool delete_extraneous = false;
@@ -269,6 +271,7 @@ int run_tui(const std::filesystem::path& state_dir,
   std::filesystem::path browse_remote_directory;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
+  auto ssh_destination_input = ftxui::Input(&ssh_destination, "Paired SSH destination (optional)");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
@@ -293,7 +296,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, include_project_ignored_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, ssh_destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, include_project_ignored_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     if (browse_scanning) return;
     const auto directory = browse_directory;
@@ -447,7 +450,8 @@ int run_tui(const std::filesystem::path& state_dir,
     ftxui::Elements contents;
     if (wizard_step == 0) {
       contents = {ftxui::text("Step 1/3: endpoints"), source_input->Render(),
-                  destination_input->Render(), ftxui::separator(),
+                  destination_input->Render(), ssh_destination_input->Render(),
+                  ftxui::text("Optional: same host's SSH path enables safe daemon-vs-SSH selection."), ftxui::separator(),
                   ftxui::text("F2: source picker  F3: destination picker"),
                   ftxui::text("Enter: next  Esc: cancel")};
     } else if (wizard_step == 1) {
@@ -459,6 +463,8 @@ int run_tui(const std::filesystem::path& state_dir,
     } else {
       contents = {ftxui::text("Step 3/3: review"),
                   ftxui::text("Source: " + source), ftxui::text("Destination: " + destination),
+                  ftxui::text(ssh_destination.empty() ? "Paired SSH destination: not provided" :
+                                                        "Paired SSH destination: " + ssh_destination),
                   ftxui::text(std::string{"Dry-run: "} + (dry_run ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Compression: "} + (compression ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Deletion: "} + (delete_extraneous ? "enabled" : "disabled")),
@@ -726,9 +732,10 @@ int run_tui(const std::filesystem::path& state_dir,
             ++wizard_step;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, ssh_destination, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
           source.clear();
           destination.clear();
+          ssh_destination.clear();
           delete_extraneous = false;
           compression = settings.compression;
           dry_run = settings.dry_run;
@@ -915,7 +922,7 @@ int main(int argc, char* argv[]) {
       std::cout << path << '\n';
       return 0;
     }
-    if (has_argument("daemon")) return run_daemon(state_dir);
+    if (has_argument("daemon")) return run_daemon(state_dir, settings);
     if (has_argument("tui")) return run_tui(state_dir, settings, settings_path);
 
     try {
@@ -924,7 +931,7 @@ int main(int argc, char* argv[]) {
       const pid_t child = fork();
       if (child == 0) {
         setsid();
-        _exit(run_daemon(state_dir));
+        _exit(run_daemon(state_dir, settings));
       }
       if (child < 0) throw std::runtime_error("cannot start daemon");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
