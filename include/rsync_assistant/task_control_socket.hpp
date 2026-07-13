@@ -30,8 +30,13 @@ class TaskControlSocketClient {
 
   [[nodiscard]] TransferTask create_ready_task(const CreateReadyTask& request) const;
   [[nodiscard]] std::vector<TransferTask> list_tasks() const;
+  [[nodiscard]] std::string execution_log(const std::string& task_id) const;
   [[nodiscard]] TransferTask preflight(const std::string& task_id) const;
   [[nodiscard]] TransferTask execute(const std::string& task_id) const;
+  [[nodiscard]] TransferTask pause(const std::string& task_id) const;
+  [[nodiscard]] TransferTask resume(const std::string& task_id) const;
+  [[nodiscard]] TransferTask stop(const std::string& task_id) const;
+  [[nodiscard]] TransferTask await_completion(const std::string& task_id) const;
 
  private:
   std::filesystem::path socket_path_;

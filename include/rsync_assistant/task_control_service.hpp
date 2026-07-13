@@ -7,7 +7,7 @@
 
 namespace rsync_assistant {
 
-enum class TaskState { ready, awaiting_execution_confirmation, completed, failed };
+enum class TaskState { ready, awaiting_execution_confirmation, running, paused, completed, failed, cancelled, interrupted };
 
 struct CreateReadyTask {
   std::string source;
@@ -37,9 +37,14 @@ class TaskControlService {
 
   [[nodiscard]] TransferTask create_ready_task(const CreateReadyTask& request);
   [[nodiscard]] std::vector<TransferTask> list_tasks() const;
+  [[nodiscard]] std::string execution_log(const std::string& task_id) const;
   [[nodiscard]] TransferTask preflight(const std::string& task_id);
   [[nodiscard]] TransferTask execute(const std::string& task_id,
                                      bool delete_confirmed = false);
+  [[nodiscard]] TransferTask pause(const std::string& task_id);
+  [[nodiscard]] TransferTask resume(const std::string& task_id);
+  [[nodiscard]] TransferTask stop(const std::string& task_id);
+  [[nodiscard]] TransferTask await_completion(const std::string& task_id);
 
  private:
   struct Impl;

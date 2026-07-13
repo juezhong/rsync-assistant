@@ -2,6 +2,7 @@
 
 #include "rsync_assistant/process_runner.hpp"
 #include "rsync_assistant/rsync_locator.hpp"
+#include "rsync_assistant/endpoint.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -9,6 +10,8 @@
 #include <format>
 #include <memory>
 #include <fstream>
+#include <mutex>
+#include <unordered_map>
 #include <sqlite3.h>
 #include <stdexcept>
 #include <string_view>
@@ -52,6 +55,8 @@ class Statement {
 
 struct TaskControlService::Impl {
   sqlite3* database = nullptr;
+  std::mutex process_mutex;
+  std::unordered_map<std::string, ManagedProcess> processes;
 
   explicit Impl(const std::filesystem::path& database_path) {
     check_sqlite(sqlite3_open_v2(database_path.c_str(), &database,
@@ -109,17 +114,18 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
                       "SELECT id, source, destination, state, command, output, delete_extraneous FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
+    const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
+    const auto task_state = state == "ready" ? TaskState::ready :
+                            state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
+                            state == "running" ? TaskState::running :
+                            state == "paused" ? TaskState::paused :
+                            state == "completed" ? TaskState::completed :
+                            state == "cancelled" ? TaskState::cancelled : TaskState::failed;
     tasks.push_back({
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0)),
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 1)),
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 2)),
-        std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))} == "ready"
-            ? TaskState::ready
-            : (std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))} == "awaiting_confirmation"
-                   ? TaskState::awaiting_execution_confirmation
-                   : (std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))} == "completed"
-                          ? TaskState::completed
-                          : TaskState::failed)),
+        task_state,
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 4)),
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 5)),
         sqlite3_column_int(statement.get(), 6) != 0,
@@ -128,10 +134,27 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
   return tasks;
 }
 
+std::string TaskControlService::execution_log(const std::string& task_id) const {
+  Statement statement{impl_->database,
+                      "SELECT output FROM transfer_tasks WHERE id = ?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1,
+                                 SQLITE_TRANSIENT),
+               impl_->database, "bind task id");
+  if (sqlite3_step(statement.get()) != SQLITE_ROW)
+    throw std::runtime_error("unknown task");
+  const auto* output = sqlite3_column_text(statement.get(), 0);
+  return output == nullptr ? "" : reinterpret_cast<const char*>(output);
+}
+
 TransferTask TaskControlService::preflight(const std::string& task_id) {
   auto tasks = list_tasks();
   const auto it = std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == task_id; });
   if (it == tasks.end() || it->state != TaskState::ready) throw std::runtime_error("task is not ready for preflight");
+  const auto source_endpoint = parse_endpoint(it->source);
+  const auto destination_endpoint = parse_endpoint(it->destination);
+  const auto remote_endpoint = source_endpoint.remote ? source_endpoint : destination_endpoint;
+  if (remote_endpoint.remote && !remote_rsync_available(remote_endpoint))
+    throw std::runtime_error("remote rsync is unavailable; confirm system scp fallback explicitly");
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial", "--dry-run"};
   if (it->delete_extraneous) arguments.push_back("--delete");
@@ -158,15 +181,66 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
   if (it->delete_extraneous) arguments.push_back("--delete");
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
-  const auto result = ProcessRunner{}.run(arguments);
+  auto process = ProcessRunner{}.start(arguments);
+  {
+    std::lock_guard lock{impl_->process_mutex};
+    impl_->processes.emplace(task_id, std::move(process));
+  }
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=? WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, "running", -1, SQLITE_TRANSIENT), impl_->database, "bind state");
+  check_sqlite(sqlite3_bind_text(statement.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "update execution");
+  return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
+}
+
+TransferTask TaskControlService::pause(const std::string& task_id) {
+  std::lock_guard lock{impl_->process_mutex};
+  auto it = impl_->processes.find(task_id);
+  if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
+  it->second.pause();
+  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='paused' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+}
+
+TransferTask TaskControlService::resume(const std::string& task_id) {
+  std::lock_guard lock{impl_->process_mutex};
+  auto it = impl_->processes.find(task_id);
+  if (it == impl_->processes.end()) throw std::runtime_error("task is not paused");
+  it->second.resume();
+  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='running' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+}
+
+TransferTask TaskControlService::stop(const std::string& task_id) {
+  std::lock_guard lock{impl_->process_mutex};
+  auto it = impl_->processes.find(task_id);
+  if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
+  it->second.stop();
+  impl_->processes.erase(it);
+  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='cancelled' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+}
+
+TransferTask TaskControlService::await_completion(const std::string& task_id) {
+  ProcessResult result;
+  {
+    std::lock_guard lock{impl_->process_mutex};
+    auto it = impl_->processes.find(task_id);
+    if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
+    result = it->second.wait();
+    impl_->processes.erase(it);
+  }
   const auto state = result.exit_code == 0 ? "completed" : "failed";
   Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, result.output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
   check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
-  check_sqlite(sqlite3_step(statement.get()), impl_->database, "update execution");
-  std::ofstream{std::filesystem::path(it->destination) / (".rsync-assistant-" + task_id + ".log")} << result.output;
-  return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "update completion");
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
 }
 
 }  // namespace rsync_assistant

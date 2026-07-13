@@ -24,6 +24,12 @@ constexpr std::uint32_t kListTasks = 3;
 constexpr std::uint32_t kTaskListResponse = 4;
 constexpr std::uint32_t kPreflight = 5;
 constexpr std::uint32_t kExecute = 6;
+constexpr std::uint32_t kPause = 7;
+constexpr std::uint32_t kResume = 8;
+constexpr std::uint32_t kStop = 9;
+constexpr std::uint32_t kAwaitCompletion = 10;
+constexpr std::uint32_t kExecutionLog = 11;
+constexpr std::uint32_t kExecutionLogResponse = 12;
 constexpr std::size_t kMaximumPayloadBytes = 1024 * 1024;
 
 struct FrameHeader {
@@ -72,15 +78,21 @@ std::pair<std::uint32_t, std::string> receive_frame(int descriptor) {
   return {type, std::move(payload)};
 }
 
-std::pair<std::string, std::string> decode_request(const std::string& payload) {
-  const auto separator = payload.find('\0');
-  if (separator == std::string::npos) throw std::runtime_error("invalid task request");
-  return {payload.substr(0, separator), payload.substr(separator + 1)};
+CreateReadyTask decode_request(const std::string& payload) {
+  const auto first = payload.find('\0');
+  const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
+  if (first == std::string::npos) throw std::runtime_error("invalid task request");
+  const auto destination = payload.substr(first + 1,
+      second == std::string::npos ? std::string::npos : second - first - 1);
+  return {payload.substr(0, first), destination,
+          second != std::string::npos && payload.substr(second + 1) == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
   const auto state = task.state == TaskState::ready ? "ready" :
                      task.state == TaskState::awaiting_execution_confirmation ? "awaiting_confirmation" :
+                     task.state == TaskState::running ? "running" :
+                     task.state == TaskState::paused ? "paused" :
                      task.state == TaskState::completed ? "completed" : "failed";
   return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state;
 }
@@ -94,7 +106,7 @@ TransferTask decode_task(const std::string& payload) {
   const auto state = payload.substr(third + 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "completed" ? TaskState::completed : TaskState::failed, "", ""};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed, "", ""};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -188,15 +200,25 @@ void TaskControlSocketServer::serve() {
     try {
       const auto [type, payload] = receive_frame(client);
       if (type == kCreateReadyTask) {
-        const auto [source, destination] = decode_request(payload);
+        const auto request = decode_request(payload);
         send_frame(client, kTaskResponse,
-                   encode_task(impl_->service.create_ready_task({source, destination})));
+                   encode_task(impl_->service.create_ready_task(request)));
       } else if (type == kListTasks) {
         send_frame(client, kTaskListResponse, encode_tasks(impl_->service.list_tasks()));
       } else if (type == kPreflight) {
         send_frame(client, kTaskResponse, encode_task(impl_->service.preflight(payload)));
       } else if (type == kExecute) {
         send_frame(client, kTaskResponse, encode_task(impl_->service.execute(payload)));
+      } else if (type == kPause) {
+        send_frame(client, kTaskResponse, encode_task(impl_->service.pause(payload)));
+      } else if (type == kResume) {
+        send_frame(client, kTaskResponse, encode_task(impl_->service.resume(payload)));
+      } else if (type == kStop) {
+        send_frame(client, kTaskResponse, encode_task(impl_->service.stop(payload)));
+      } else if (type == kAwaitCompletion) {
+        send_frame(client, kTaskResponse, encode_task(impl_->service.await_completion(payload)));
+      } else if (type == kExecutionLog) {
+        send_frame(client, kExecutionLogResponse, impl_->service.execution_log(payload));
       } else {
         throw std::runtime_error("unsupported request");
       }
@@ -238,7 +260,9 @@ TransferTask TaskControlSocketClient::create_ready_task(
     const CreateReadyTask& request) const {
   const int descriptor = connect_to(socket_path_);
   try {
-    send_frame(descriptor, kCreateReadyTask, request.source + '\0' + request.destination);
+    send_frame(descriptor, kCreateReadyTask,
+               request.source + '\0' + request.destination + '\0' +
+                   (request.delete_extraneous ? "1" : "0"));
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
     if (type != kTaskResponse) throw std::runtime_error("unexpected task response");
@@ -247,6 +271,31 @@ TransferTask TaskControlSocketClient::create_ready_task(
     close(descriptor);
     throw;
   }
+}
+
+namespace {
+TransferTask request_task(const std::filesystem::path& socket_path, std::uint32_t type,
+                          const std::string& task_id) {
+  const int descriptor = connect_to(socket_path);
+  send_frame(descriptor, type, task_id);
+  const auto [response_type, payload] = receive_frame(descriptor);
+  close(descriptor);
+  if (response_type != kTaskResponse) throw std::runtime_error("unexpected task response");
+  return decode_task(payload);
+}
+}  // namespace
+
+TransferTask TaskControlSocketClient::pause(const std::string& task_id) const {
+  return request_task(socket_path_, kPause, task_id);
+}
+TransferTask TaskControlSocketClient::resume(const std::string& task_id) const {
+  return request_task(socket_path_, kResume, task_id);
+}
+TransferTask TaskControlSocketClient::stop(const std::string& task_id) const {
+  return request_task(socket_path_, kStop, task_id);
+}
+TransferTask TaskControlSocketClient::await_completion(const std::string& task_id) const {
+  return request_task(socket_path_, kAwaitCompletion, task_id);
 }
 
 std::vector<TransferTask> TaskControlSocketClient::list_tasks() const {
@@ -261,6 +310,15 @@ std::vector<TransferTask> TaskControlSocketClient::list_tasks() const {
     close(descriptor);
     throw;
   }
+}
+
+std::string TaskControlSocketClient::execution_log(const std::string& task_id) const {
+  const int descriptor = connect_to(socket_path_);
+  send_frame(descriptor, kExecutionLog, task_id);
+  const auto [type, payload] = receive_frame(descriptor);
+  close(descriptor);
+  if (type != kExecutionLogResponse) throw std::runtime_error("unexpected execution log response");
+  return payload;
 }
 
 }  // namespace rsync_assistant

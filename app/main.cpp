@@ -33,22 +33,35 @@ int run_tui(const std::filesystem::path& state_dir) {
   rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
   auto screen = ftxui::ScreenInteractive::Fullscreen();
   std::string status = "r: refresh  q: quit";
+  std::string selected_log;
   std::vector<rsync_assistant::TransferTask> tasks;
   int selected = 0;
   bool creating = false;
   std::string source;
   std::string destination;
+  bool delete_extraneous = false;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
-  auto form = ftxui::Container::Vertical({source_input, destination_input});
+  auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
+  auto form = ftxui::Container::Vertical({source_input, destination_input, delete_checkbox});
   auto refresh = [&] {
     try {
       tasks = client.list_tasks();
       if (selected >= static_cast<int>(tasks.size())) selected = 0;
+      selected_log = tasks.empty() ? "No selected task" : client.execution_log(tasks.at(selected).id);
       std::string task_lines;
+      const auto label = [](rsync_assistant::TaskState state) {
+        if (state == rsync_assistant::TaskState::ready) return "Ready";
+        if (state == rsync_assistant::TaskState::awaiting_execution_confirmation) return "Confirm";
+        if (state == rsync_assistant::TaskState::running) return "Running";
+        if (state == rsync_assistant::TaskState::paused) return "Paused";
+        if (state == rsync_assistant::TaskState::completed) return "Completed";
+        if (state == rsync_assistant::TaskState::cancelled) return "Cancelled";
+        return "Failed";
+      };
       for (std::size_t index = 0; index < tasks.size(); ++index)
         task_lines += (static_cast<int>(index) == selected ? "> " : "  ") +
-                      tasks[index].id + "\n";
+                      std::string{label(tasks[index].state)} + " " + tasks[index].id + "\n";
       if (task_lines.empty()) task_lines = "No tasks yet";
       status = "r: refresh  q: quit\n\n" + task_lines;
     } catch (const std::exception& error) {
@@ -62,12 +75,13 @@ int run_tui(const std::filesystem::path& state_dir) {
                      ftxui::paragraph(status)}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 30),
         ftxui::vbox({ftxui::text("Current task") | ftxui::bold, ftxui::separator(),
-                     ftxui::text("Select a task to inspect transfer state"),
+                     ftxui::paragraph(selected_log.empty() ? "No execution output yet" : selected_log),
                      ftxui::separator(), ftxui::text("Program log"),
                      ftxui::text("Daemon connected through local socket")}) |
             ftxui::border | ftxui::flex,
         ftxui::vbox({ftxui::text("Details / shortcuts") | ftxui::bold,
-                     ftxui::separator(), ftxui::text("Enter: start/inspect"),
+                     ftxui::separator(), ftxui::text("Enter: preflight/execute"),
+                     ftxui::text("p: pause/resume  x: stop  w: wait"),
                      ftxui::text("n: new task"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
@@ -76,6 +90,7 @@ int run_tui(const std::filesystem::path& state_dir) {
                         ftxui::window(ftxui::text("New task"),
                                       ftxui::vbox({source_input->Render(),
                                                    destination_input->Render(),
+                                                   delete_checkbox->Render(),
                                                    ftxui::separator(),
                                                    ftxui::text("Enter: create  Esc: cancel")})) |
                             ftxui::center});
@@ -100,9 +115,10 @@ int run_tui(const std::filesystem::path& state_dir) {
     if (event == ftxui::Event::Return) {
       try {
         if (creating) {
-          (void)client.create_ready_task({source, destination});
+          (void)client.create_ready_task({source, destination, delete_extraneous});
           source.clear();
           destination.clear();
+          delete_extraneous = false;
           creating = false;
           refresh();
         } else if (!tasks.empty()) {
@@ -114,6 +130,25 @@ int run_tui(const std::filesystem::path& state_dir) {
       } catch (const std::exception& error) {
         status = error.what();
       }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('p')) {
+      try {
+        const auto& task = tasks.at(selected);
+        if (task.state == rsync_assistant::TaskState::running) (void)client.pause(task.id);
+        if (task.state == rsync_assistant::TaskState::paused) (void)client.resume(task.id);
+        refresh();
+      } catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('x')) {
+      try { (void)client.stop(tasks.at(selected).id); refresh(); }
+      catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('w')) {
+      try { (void)client.await_completion(tasks.at(selected).id); refresh(); }
+      catch (const std::exception& error) { status = error.what(); }
       return true;
     }
     if (!creating && event == ftxui::Event::ArrowDown && selected + 1 < static_cast<int>(tasks.size())) {
