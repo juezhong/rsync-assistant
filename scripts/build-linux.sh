@@ -8,6 +8,27 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=${BUILD_DIR:-"$root/build"}
 bundled=${RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC:-ON}
 
+detect_build_jobs() {
+  detected=
+  if command -v getconf >/dev/null 2>&1; then
+    detected=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  case "$detected" in ''|*[!0-9]*)
+    if command -v nproc >/dev/null 2>&1; then
+      detected=$(nproc 2>/dev/null || true)
+    fi
+    ;;
+  esac
+  case "$detected" in ''|*[!0-9]*)
+    detected=1
+    ;;
+  esac
+  if [ "$detected" -gt 16 ]; then detected=16; fi
+  printf '%s\n' "$detected"
+}
+
+build_jobs=$(detect_build_jobs)
+
 missing=0
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -59,8 +80,9 @@ printf '%s\n' "rsync-assistant Linux build"
 printf '%s\n' "  source: $root"
 printf '%s\n' "  build directory: $build_dir"
 printf '%s\n' "  bundled rsync: $bundled"
+printf '%s\n' "  parallel compile jobs: $build_jobs (min(logical CPUs, 16))"
 printf '%s\n' "  step 1/2: configure CMake"
 cmake -S "$root" -B "$build_dir" \
   -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled"
 printf '%s\n' "  step 2/2: build targets"
-cmake --build "$build_dir" --parallel
+cmake --build "$build_dir" --parallel "$build_jobs"
