@@ -18,6 +18,7 @@
 #include <sys/file.h>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -199,6 +200,9 @@ int run_tui(const std::filesystem::path& state_dir,
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
+  std::future<std::pair<unsigned, std::vector<rsync_assistant::PathEntry>>> browse_scan;
+  bool browse_scanning = false;
+  unsigned browse_scan_generation = 0;
   int browse_selected = 0;
   bool browse_hidden = false;
   bool browse_include_ignored = false;
@@ -238,28 +242,50 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
   auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
-    if (browse_search && !browse_query.empty()) {
-      browse_entries.clear();
-      for (const auto& path : rsync_assistant::search_paths(browse_root, browse_query, browse_hidden))
-        browse_entries.push_back({path, std::filesystem::is_directory(path), false});
-    } else {
-      browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
-    }
-    if (!browse_include_ignored && !browse_remote) {
-      const auto profile = rsync_assistant::detect_project_profile(browse_root);
-      browse_entries.erase(std::remove_if(browse_entries.begin(), browse_entries.end(), [&](const auto& entry) {
-        std::error_code error;
-        const auto relative = std::filesystem::relative(entry.path, browse_root, error).generic_string();
-        if (error) return false;
-        if (relative == ".git" || relative.starts_with(".git/")) return true;
-        for (const auto& exclusion : profile.exclusions) {
-          const auto prefix = exclusion.ends_with('/') ? exclusion.substr(0, exclusion.size() - 1) : exclusion;
-          if (relative == prefix || relative.starts_with(prefix + "/")) return true;
-        }
-        return false;
-      }), browse_entries.end());
-    }
-    if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
+    if (browse_scanning) return;
+    const auto directory = browse_directory;
+    const auto root = browse_root;
+    const auto search = browse_search;
+    const auto query = browse_query;
+    const auto hidden = browse_hidden;
+    const auto include_ignored = browse_include_ignored;
+    const auto generation = ++browse_scan_generation;
+    browse_scanning = true;
+    browse_scan = std::async(std::launch::async, [directory, root, search, query, hidden, include_ignored, generation] {
+      std::vector<rsync_assistant::PathEntry> entries;
+      if (search && !query.empty()) {
+        for (const auto& path : rsync_assistant::search_paths(root, query, hidden))
+          entries.push_back({path, std::filesystem::is_directory(path), false});
+      } else {
+        entries = rsync_assistant::scan_directory_level(directory, hidden);
+      }
+      if (!include_ignored) {
+        const auto profile = rsync_assistant::detect_project_profile(root);
+        entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const auto& entry) {
+          std::error_code error;
+          const auto relative = std::filesystem::relative(entry.path, root, error).generic_string();
+          if (error) return false;
+          if (relative == ".git" || relative.starts_with(".git/")) return true;
+          for (const auto& exclusion : profile.exclusions) {
+            const auto prefix = exclusion.ends_with('/') ? exclusion.substr(0, exclusion.size() - 1) : exclusion;
+            if (relative == prefix || relative.starts_with(prefix + "/")) return true;
+          }
+          return false;
+        }), entries.end());
+      }
+      return std::pair{generation, std::move(entries)};
+    });
+  };
+  auto collect_browser_scan = [&] {
+    if (!browse_scanning || browse_scan.wait_for(std::chrono::milliseconds{0}) != std::future_status::ready) return;
+    try {
+      auto [generation, entries] = browse_scan.get();
+      if (generation == browse_scan_generation) {
+        browse_entries = std::move(entries);
+        if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
+      }
+    } catch (const std::exception& error) { status = error.what(); }
+    browse_scanning = false;
   };
   auto refresh = [&] {
     try {
@@ -346,9 +372,11 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (!creating) return dashboard;
     if (browsing) {
+      collect_browser_scan();
       std::string entries = browse_destination ? "h: parent  l: enter  /: search  g: hidden  i: ignored  Enter: select\n\n" :
                                                  "h: parent  l: enter  /: search  g: hidden  i: ignored  Space: toggle  F: flatten  Enter: confirm\n\n";
       if (browse_search) entries += "Search: " + browse_query + " (Enter: apply, Esc: cancel)\n";
+      if (browse_scanning) entries += "Scanning…\n";
       entries += browse_directory.string() + "\n";
       for (std::size_t index = 0; index < browse_entries.size(); ++index)
         entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} +
@@ -453,6 +481,7 @@ int run_tui(const std::filesystem::path& state_dir,
       browse_selected = 0;
       try {
         if (endpoint.remote) {
+          ++browse_scan_generation;
           if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
           browse_entries.clear();
           for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
@@ -484,6 +513,7 @@ int run_tui(const std::filesystem::path& state_dir,
       browse_selected = 0;
       try {
         if (endpoint.remote) {
+          ++browse_scan_generation;
           if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
           browse_entries.clear();
           for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
