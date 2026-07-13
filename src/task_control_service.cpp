@@ -135,6 +135,9 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN method TEXT NOT NULL DEFAULT 'local_rsync'",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN trusted_daemon INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
                               "WHERE state IN ('running', 'paused')",
@@ -160,8 +163,8 @@ TransferTask TaskControlService::create_ready_task(
   const auto method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
                       (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon) "
+                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -179,13 +182,15 @@ TransferTask TaskControlService::create_ready_task(
                impl_->database, "bind dry-run option");
   check_sqlite(sqlite3_bind_text(statement.get(), 7, method, -1, SQLITE_TRANSIENT),
                impl_->database, "bind transfer method");
+  check_sqlite(sqlite3_bind_int(statement.get(), 8, request.trusted_daemon),
+               impl_->database, "bind trusted daemon");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
   return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -265,6 +270,12 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto source_endpoint = parse_endpoint(it->source);
   const auto destination_endpoint = parse_endpoint(it->destination);
   const auto remote_endpoint = source_endpoint.remote ? source_endpoint : destination_endpoint;
+  if (remote_endpoint.rsync_daemon) {
+    Statement trust{impl_->database, "SELECT trusted_daemon FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(trust.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    if (sqlite3_step(trust.get()) != SQLITE_ROW || sqlite3_column_int(trust.get(), 0) == 0)
+      throw std::runtime_error("direct rsync daemon requires explicit trusted-LAN authorization");
+  }
   if (remote_endpoint.remote && !remote_rsync_available(remote_endpoint))
     throw std::runtime_error("remote rsync is unavailable; confirm system scp fallback explicitly");
   const auto rsync = RsyncLocator{}.executable().string();

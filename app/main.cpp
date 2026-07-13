@@ -90,6 +90,7 @@ int run_tui(const std::filesystem::path& state_dir,
   bool delete_extraneous = false;
   bool compression = settings.compression;
   bool dry_run = settings.dry_run;
+  bool trusted_daemon = false;
   bool delete_confirming = false;
   std::string delete_confirmation;
   bool scp_confirming = false;
@@ -110,6 +111,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
+  auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
@@ -119,7 +121,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -221,7 +223,7 @@ int run_tui(const std::filesystem::path& state_dir,
                   ftxui::text("Enter: next  Esc: cancel")};
     } else if (wizard_step == 1) {
       contents = {ftxui::text("Step 2/3: transfer options"), dry_run_checkbox->Render(),
-                  compression_checkbox->Render(), delete_checkbox->Render(), ftxui::separator(),
+                  compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(), ftxui::separator(),
                   ftxui::text("Enter: review  F4: previous  Esc: cancel")};
     } else {
       contents = {ftxui::text("Step 3/3: review"),
@@ -397,12 +399,13 @@ int run_tui(const std::filesystem::path& state_dir,
             ++wizard_step;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon});
           source.clear();
           destination.clear();
           delete_extraneous = false;
           compression = settings.compression;
           dry_run = settings.dry_run;
+          trusted_daemon = false;
           creating = false;
           wizard_step = 0;
           refresh();

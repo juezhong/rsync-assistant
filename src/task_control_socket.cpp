@@ -86,14 +86,16 @@ CreateReadyTask decode_request(const std::string& payload) {
   const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
   const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
   const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
-  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos)
+  const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
+  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos)
     throw std::runtime_error("invalid task request");
   const auto destination = payload.substr(first + 1,
                                           second - first - 1);
   return {payload.substr(0, first), destination,
           payload.substr(second + 1, third - second - 1) == "1",
           payload.substr(third + 1, fourth - third - 1) == "1",
-          payload.substr(fourth + 1) == "1"};
+          payload.substr(fourth + 1, fifth - fourth - 1) == "1",
+          payload.substr(fifth + 1) == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
@@ -318,7 +320,8 @@ TransferTask TaskControlSocketClient::create_ready_task(
                request.source + '\0' + request.destination + '\0' +
                    (request.delete_extraneous ? "1" : "0") + '\0' +
                    (request.compression ? "1" : "0") + '\0' +
-                   (request.dry_run ? "1" : "0"));
+                   (request.dry_run ? "1" : "0") + '\0' +
+                   (request.trusted_daemon ? "1" : "0"));
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
     require_response(type, kTaskResponse, payload, "task");

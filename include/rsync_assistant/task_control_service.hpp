@@ -16,6 +16,7 @@ struct CreateReadyTask {
   bool delete_extraneous = false;
   bool compression = false;
   bool dry_run = true;
+  bool trusted_daemon = false;
 };
 
 struct TransferTask {
