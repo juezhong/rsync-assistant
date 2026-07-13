@@ -207,8 +207,6 @@ TransferTask TaskControlService::create_ready_task(
                            method == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync;
   std::filesystem::path manifest_path;
   if (!request.selected_relative_paths.empty()) {
-    if (source_endpoint.remote)
-      throw std::invalid_argument("multi-selection currently requires a local source root");
     SelectionManifest manifest{source_endpoint.path, {}, request.flatten_selection};
     std::unordered_set<std::string> flattened_names;
     for (const auto& value : request.selected_relative_paths) {
