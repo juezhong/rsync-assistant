@@ -59,6 +59,30 @@ cmake -S . -B build
 cmake --build build --parallel
 ```
 
+### 构建脚本做了什么？
+
+`scripts/build-linux.sh` 和 `scripts/build-macos.sh` 不是安装脚本，也不会修改系统配置；它们只是把下面两条 CMake 命令和合适的默认值固定下来，并打印实际使用的目录与选择：
+
+| 动作 | Linux 脚本 | macOS 脚本 |
+| --- | --- | --- |
+| 定位源码目录 | 脚本上一级，即仓库根目录 | 相同 |
+| 构建目录 | 默认 `./build`，可用 `BUILD_DIR=/path` 覆盖 | 相同 |
+| 配置 CMake | `cmake -S <root> -B <build>` | 相同 |
+| rsync 选择 | 默认 `RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC=ON`，构建 `third_party/rsync` | 默认 `OFF`，使用系统 rsync 进行首次构建 |
+| 编译 | `cmake --build <build> --parallel` | 相同 |
+
+Linux 的 bundled 选项开启时，CMake 会在 `build/private-rsync/` 调用子模块自带的 `configure` 和 `make`，生成私有 `rsync`；程序运行时优先使用它。脚本开头的 `set -eu` 表示任一步失败都会立即停止，也会把未定义变量当成错误，避免在失败后继续产生不完整构建。
+
+常用的显式调用如下：
+
+```sh
+# 使用另一处构建目录，不污染默认 ./build
+BUILD_DIR="$HOME/build/rsync-assistant" ./scripts/build-linux.sh
+
+# Linux 上临时明确改为系统 rsync；不是默认行为
+RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC=OFF ./scripts/build-linux.sh
+```
+
 ## 构建排错
 
 ### `Could NOT find SQLite3 (missing: SQLite3_INCLUDE_DIR SQLite3_LIBRARY)`
