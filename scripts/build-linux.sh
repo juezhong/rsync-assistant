@@ -69,6 +69,36 @@ if ! printf '%s\n' '#include <sqlite3.h>' 'int main(void) { return sqlite3_libve
   exit 1
 fi
 
+require_bundled_rsync_library() {
+  feature=$1
+  header=$2
+  library=$3
+  packages=$4
+  if ! printf '#include <%s>\nint main(void) { return 0; }\n' "$header" |
+       cc -x c - -l"$library" -o "$sqlite_probe" >/dev/null 2>&1; then
+    printf '%s\n' "missing bundled-rsync feature: $feature (header <$header> or -l$library)" >&2
+    printf '%s\n' "  install: $packages" >&2
+    missing=1
+  fi
+}
+
+if [ "$bundled" = "ON" ]; then
+  # Upstream rsync's Git build enables these features by default and aborts
+  # configure when their development headers or libraries are absent.
+  require_bundled_rsync_library xxhash xxhash.h xxhash \
+    "libxxhash-dev (Debian/Ubuntu) | xxhash-devel (Fedora/RHEL) | xxhash (Arch)"
+  require_bundled_rsync_library lz4 lz4.h lz4 \
+    "liblz4-dev (Debian/Ubuntu) | lz4-devel (Fedora/RHEL) | lz4 (Arch)"
+  require_bundled_rsync_library zstd zstd.h zstd \
+    "libzstd-dev (Debian/Ubuntu) | libzstd-devel (Fedora/RHEL) | zstd (Arch)"
+  require_bundled_rsync_library openssl openssl/md4.h crypto \
+    "libssl-dev (Debian/Ubuntu) | openssl-devel (Fedora/RHEL) | openssl (Arch)"
+fi
+if [ "$missing" -ne 0 ]; then
+  printf '%s\n' "Install the listed bundled-rsync development packages, then run this script again." >&2
+  exit 1
+fi
+
 printf '%s\n' "rsync-assistant Linux build"
 printf '%s\n' "  source: $root"
 printf '%s\n' "  build directory: $build_dir"
