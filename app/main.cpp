@@ -74,7 +74,8 @@ int run_daemon(const std::filesystem::path& state_dir) {
 }
 
 int run_tui(const std::filesystem::path& state_dir,
-            const rsync_assistant::Settings& settings) {
+            rsync_assistant::Settings settings,
+            const std::filesystem::path& settings_path) {
   TuiSessionLock session_lock{state_dir};
   rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
   auto screen = ftxui::ScreenInteractive::Fullscreen();
@@ -92,6 +93,7 @@ int run_tui(const std::filesystem::path& state_dir,
   bool delete_confirming = false;
   std::string delete_confirmation;
   bool scp_confirming = false;
+  bool settings_open = false;
   std::string scp_confirmation;
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
@@ -110,6 +112,9 @@ int run_tui(const std::filesystem::path& state_dir,
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
+  auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
+  auto settings_compression = ftxui::Checkbox("Default compression", &settings.compression);
+  auto settings_benchmark = ftxui::Checkbox("Enable benchmarks", &settings.benchmark_enabled);
   auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
@@ -156,7 +161,7 @@ int run_tui(const std::filesystem::path& state_dir,
                      ftxui::text("p: pause/resume  x: stop  w: wait"),
                      ftxui::text("e: re-prepare interrupted/failed rsync task"),
                      ftxui::text("c: explicit scp fallback after rsync failure"),
-                     ftxui::text("n: new task"), ftxui::text("?: help")}) |
+                     ftxui::text("n: new task  s: settings"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
     if (delete_confirming) {
@@ -171,6 +176,14 @@ int run_tui(const std::filesystem::path& state_dir,
                                         ftxui::vbox({ftxui::text("scp has no rsync dry-run or resume guarantee."),
                                                      ftxui::text("Type SCP then press Enter"),
                                                      scp_confirmation_input->Render()})) | ftxui::center});
+    }
+    if (settings_open) {
+      return ftxui::dbox({dashboard | ftxui::dim,
+                          ftxui::window(ftxui::text("Settings"),
+                                        ftxui::vbox({settings_dry_run->Render(), settings_compression->Render(),
+                                                     settings_benchmark->Render(), ftxui::separator(),
+                                                     ftxui::text("Ctrl-S: save  Esc: close"),
+                                                     ftxui::text(settings_path.string())})) | ftxui::center});
     }
     if (!creating) return dashboard;
     if (browsing) {
@@ -220,6 +233,13 @@ int run_tui(const std::filesystem::path& state_dir,
       wizard_step = 0;
       return true;
     }
+    if (!creating && event == ftxui::Event::Character('s')) { settings_open = true; return true; }
+    if (settings_open && event == ftxui::Event::CtrlS) {
+      try { settings.save(settings_path); status = "Settings saved: " + settings_path.string(); }
+      catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (settings_open && event == ftxui::Event::Escape) { settings_open = false; return true; }
     if (event == ftxui::Event::Escape && (delete_confirming || scp_confirming)) {
       delete_confirming = false;
       delete_confirmation.clear();
@@ -447,9 +467,11 @@ int main(int argc, char* argv[]) {
         if (std::string_view{argv[index]} == argument) return true;
       return false;
     };
+    const auto state_dir = state_directory(argc, argv);
+    const std::filesystem::path settings_path = option_value("--config") ?
+        std::filesystem::absolute(option_value("--config")) : state_dir / "settings.toml";
     rsync_assistant::Settings settings;
-    if (const auto* config = option_value("--config"))
-      settings = rsync_assistant::Settings::load(config);
+    if (std::filesystem::exists(settings_path)) settings = rsync_assistant::Settings::load(settings_path);
     if (has_argument("--control-ping")) {
       std::cout << "rsync-assistant-control-v1\n";
       return 0;
@@ -500,9 +522,8 @@ int main(int argc, char* argv[]) {
       std::cout << path << '\n';
       return 0;
     }
-    const auto state_dir = state_directory(argc, argv);
     if (has_argument("daemon")) return run_daemon(state_dir);
-    if (has_argument("tui")) return run_tui(state_dir, settings);
+    if (has_argument("tui")) return run_tui(state_dir, settings, settings_path);
 
     try {
       (void)rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
@@ -515,7 +536,7 @@ int main(int argc, char* argv[]) {
       if (child < 0) throw std::runtime_error("cannot start daemon");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    return run_tui(state_dir, settings);
+    return run_tui(state_dir, settings, settings_path);
   } catch (const std::exception& error) {
     std::cerr << "rsync-assistant: " << error.what() << '\n';
     return 1;
