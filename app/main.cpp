@@ -46,6 +46,8 @@ int run_tui(const std::filesystem::path& state_dir,
   bool dry_run = settings.dry_run;
   bool delete_confirming = false;
   std::string delete_confirmation;
+  bool scp_confirming = false;
+  std::string scp_confirmation;
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
@@ -60,6 +62,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
+  auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
   auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
@@ -115,6 +118,13 @@ int run_tui(const std::filesystem::path& state_dir,
                                         ftxui::vbox({ftxui::text("Type DELETE then press Enter"),
                                                      delete_confirmation_input->Render()})) | ftxui::center});
     }
+    if (scp_confirming) {
+      return ftxui::dbox({dashboard | ftxui::dim,
+                          ftxui::window(ftxui::text("Confirm scp fallback"),
+                                        ftxui::vbox({ftxui::text("scp has no rsync dry-run or resume guarantee."),
+                                                     ftxui::text("Type SCP then press Enter"),
+                                                     scp_confirmation_input->Render()})) | ftxui::center});
+    }
     if (!creating) return dashboard;
     if (browsing) {
       std::string entries = "h: parent  l: enter  g: hidden  Space/Enter: select\n\n";
@@ -151,9 +161,11 @@ int run_tui(const std::filesystem::path& state_dir,
       creating = true;
       return true;
     }
-    if (event == ftxui::Event::Escape && delete_confirming) {
+    if (event == ftxui::Event::Escape && (delete_confirming || scp_confirming)) {
       delete_confirming = false;
       delete_confirmation.clear();
+      scp_confirming = false;
+      scp_confirmation.clear();
       return true;
     }
     if (creating && event == ftxui::Event::Character('b')) {
@@ -229,6 +241,14 @@ int run_tui(const std::filesystem::path& state_dir,
           refresh();
           return true;
         }
+        if (scp_confirming) {
+          if (scp_confirmation != "SCP") throw std::runtime_error("type SCP to confirm system scp fallback");
+          (void)client.execute_scp_fallback(tasks.at(selected).id);
+          scp_confirmation.clear();
+          scp_confirming = false;
+          refresh();
+          return true;
+        }
         if (creating) {
           (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run});
           source.clear();
@@ -277,7 +297,11 @@ int run_tui(const std::filesystem::path& state_dir,
       return true;
     }
     if (!creating && !tasks.empty() && event == ftxui::Event::Character('c')) {
-      try { (void)client.execute_scp_fallback(tasks.at(selected).id); refresh(); }
+      try {
+        if (tasks.at(selected).state != rsync_assistant::TaskState::failed)
+          throw std::runtime_error("scp fallback is available only after rsync failure");
+        scp_confirming = true;
+      }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
