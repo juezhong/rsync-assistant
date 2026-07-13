@@ -56,7 +56,7 @@ Settings Settings::load(const std::filesystem::path& path) {
 }
 
 void Settings::save(const std::filesystem::path& path) const {
-  std::filesystem::create_directories(path.parent_path());
+  if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
   std::ofstream output{path, std::ios::trunc};
   if (!output) throw std::runtime_error("cannot write settings");
   output << "[transfer]\n"
