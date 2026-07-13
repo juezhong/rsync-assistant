@@ -525,8 +525,8 @@ int run_tui(const std::filesystem::path& state_dir,
     if (!creating) return dashboard;
     if (browsing) {
       collect_browser_scan();
-      std::string entries = browse_destination ? "h: parent  l: enter  /: search  g: hidden  i: ignored  Enter: select\n\n" :
-                                                 "h: parent  l: enter  /: search  g: hidden  i: ignored  Space: toggle  F: flatten  Enter: confirm\n\n";
+      std::string entries = browse_destination ? "j/k move  h parent  l enter  Enter select\n" :
+                                                 "j/k move  h parent  l enter  Space toggle  F flatten  Enter confirm\n";
       if (browse_search) entries += "Search: " + browse_query + " (Enter: apply, Esc: cancel)\n";
       if (browse_scanning || browse_home_scanning) entries += "Scanning…\n";
       if (browse_remote && browse_remote_host.empty()) {
@@ -534,16 +534,22 @@ int run_tui(const std::filesystem::path& state_dir,
         for (std::size_t index = 0; index < browse_ssh_hosts.size(); ++index)
           entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} + browse_ssh_hosts[index] + "\n";
       }
-      entries += browse_directory.string() + "\n";
-      for (std::size_t index = 0; index < browse_entries.size(); ++index)
+      entries += (browse_remote ? browse_remote_directory : browse_directory).string() + "\n";
+      constexpr std::size_t visible_entries = 12;
+      const auto first = browse_entries.size() <= visible_entries ? std::size_t{0} :
+          std::min<std::size_t>(std::max(0, browse_selected - static_cast<int>(visible_entries / 2)), browse_entries.size() - visible_entries);
+      const auto last = std::min(browse_entries.size(), first + visible_entries);
+      if (first > 0) entries += "  …\n";
+      for (std::size_t index = first; index < last; ++index)
         entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} +
                    (!browse_destination && browse_selected_paths.contains(browse_entries[index].path.string()) ? "[x] " : "[ ] ") +
                    browse_entries[index].path.filename().string() +
                    (browse_entries[index].directory ? "/\n" : "\n");
+      if (last < browse_entries.size()) entries += "  …\n";
       if (!browse_destination && !browse_remote)
         entries += "\nRoot: " + browse_root.string() + "\nStructure: " + (flatten_selection ? "flatten" : "preserve relative paths");
       return ftxui::dbox({dashboard | ftxui::dim,
-                          ftxui::window(ftxui::text("Select source path"),
+                          ftxui::window(ftxui::text(browse_destination ? "Select destination directory" : "Select source path"),
                                         ftxui::vbox({ftxui::paragraph(entries),
                                                      browse_remote && browse_remote_host.empty() ? browse_manual_host_input->Render() : ftxui::text(""),
                                                      known_host_confirming ? known_host_confirmation_input->Render() : (browse_manual_path_editing ? browse_manual_path_input->Render() : ftxui::text("")),
