@@ -98,19 +98,21 @@ std::string encode_task(const TransferTask& task) {
                      task.state == TaskState::running ? "running" :
                      task.state == TaskState::paused ? "paused" :
                      task.state == TaskState::completed ? "completed" : "failed";
-  return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state;
+  return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state + '\0' +
+         (task.delete_extraneous ? "1" : "0");
 }
 
 TransferTask decode_task(const std::string& payload) {
   const auto first = payload.find('\0');
   const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
   const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
-  if (first == std::string::npos || second == std::string::npos || third == std::string::npos)
+  const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
+  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos)
     throw std::runtime_error("invalid task response");
-  const auto state = payload.substr(third + 1);
+  const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed, "", ""};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed, "", "", payload.substr(fourth + 1) == "1"};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -130,7 +132,8 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
     const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
     const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
     const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
-    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos)
+    const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
+    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos)
       throw std::runtime_error("invalid task list response");
     const auto state = payload.substr(third + 1, fourth - third - 1);
     tasks.push_back({payload.substr(offset, first - offset),
@@ -138,9 +141,9 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      payload.substr(second + 1, third - second - 1),
                      state == "ready" ? TaskState::ready :
                      state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
-                     state == "completed" ? TaskState::completed : TaskState::failed,
-                     "", ""});
-    offset = fourth + 1;
+                     state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed,
+                     "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1"});
+    offset = fifth + 1;
   }
   return tasks;
 }
@@ -212,7 +215,10 @@ void TaskControlSocketServer::serve() {
       } else if (type == kPreflight) {
         send_frame(client, kTaskResponse, encode_task(impl_->service.preflight(payload)));
       } else if (type == kExecute) {
-        send_frame(client, kTaskResponse, encode_task(impl_->service.execute(payload)));
+        const auto separator = payload.find('\0');
+        const auto task_id = payload.substr(0, separator);
+        const auto confirmed = separator != std::string::npos && payload.substr(separator + 1) == "DELETE";
+        send_frame(client, kTaskResponse, encode_task(impl_->service.execute(task_id, confirmed)));
       } else if (type == kPause) {
         send_frame(client, kTaskResponse, encode_task(impl_->service.pause(payload)));
       } else if (type == kResume) {
@@ -245,9 +251,11 @@ TransferTask TaskControlSocketClient::preflight(const std::string& task_id) cons
   return decode_task(payload);
 }
 
-TransferTask TaskControlSocketClient::execute(const std::string& task_id) const {
+TransferTask TaskControlSocketClient::execute(const std::string& task_id,
+                                              bool delete_confirmed) const {
   const int descriptor = connect_to(socket_path_);
-  send_frame(descriptor, kExecute, task_id);
+    send_frame(descriptor, kExecute,
+               task_id + '\0' + (delete_confirmed ? "DELETE" : ""));
   const auto [type, payload] = receive_frame(descriptor);
   close(descriptor);
   if (type != kTaskResponse) throw std::runtime_error("unexpected execute response");

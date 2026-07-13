@@ -40,6 +40,8 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::string destination;
   bool delete_extraneous = false;
   bool compression = false;
+  bool delete_confirming = false;
+  std::string delete_confirmation;
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
@@ -49,7 +51,8 @@ int run_tui(const std::filesystem::path& state_dir) {
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
-  auto form = ftxui::Container::Vertical({source_input, destination_input, compression_checkbox, delete_checkbox});
+  auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
+  auto form = ftxui::Container::Vertical({source_input, destination_input, compression_checkbox, delete_checkbox, delete_confirmation_input});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -96,6 +99,12 @@ int run_tui(const std::filesystem::path& state_dir) {
                      ftxui::text("n: new task"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
+    if (delete_confirming) {
+      return ftxui::dbox({dashboard | ftxui::dim,
+                          ftxui::window(ftxui::text("Confirm destination deletion"),
+                                        ftxui::vbox({ftxui::text("Type DELETE then press Enter"),
+                                                     delete_confirmation_input->Render()})) | ftxui::center});
+    }
     if (!creating) return dashboard;
     if (browsing) {
       std::string entries = "h: parent  l: enter  g: hidden  Space/Enter: select\n\n";
@@ -131,6 +140,11 @@ int run_tui(const std::filesystem::path& state_dir) {
       creating = true;
       return true;
     }
+    if (event == ftxui::Event::Escape && delete_confirming) {
+      delete_confirming = false;
+      delete_confirmation.clear();
+      return true;
+    }
     if (creating && event == ftxui::Event::Character('b')) {
       browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
       browse_selected = 0;
@@ -160,6 +174,14 @@ int run_tui(const std::filesystem::path& state_dir) {
     }
     if (event == ftxui::Event::Return) {
       try {
+        if (delete_confirming) {
+          if (delete_confirmation != "DELETE") throw std::runtime_error("type DELETE to confirm");
+          (void)client.execute(tasks.at(selected).id, true);
+          delete_confirmation.clear();
+          delete_confirming = false;
+          refresh();
+          return true;
+        }
         if (creating) {
           (void)client.create_ready_task({source, destination, delete_extraneous, compression});
           source.clear();
@@ -171,7 +193,10 @@ int run_tui(const std::filesystem::path& state_dir) {
         } else if (!tasks.empty()) {
           const auto& task = tasks.at(selected);
           if (task.state == rsync_assistant::TaskState::ready) (void)client.preflight(task.id);
-          if (task.state == rsync_assistant::TaskState::awaiting_execution_confirmation) (void)client.execute(task.id);
+          if (task.state == rsync_assistant::TaskState::awaiting_execution_confirmation) {
+            if (task.delete_extraneous) delete_confirming = true;
+            else (void)client.execute(task.id);
+          }
           refresh();
         }
       } catch (const std::exception& error) {
