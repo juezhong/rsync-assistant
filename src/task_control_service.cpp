@@ -36,6 +36,22 @@ std::string next_task_id() {
   return std::format("task-{}-{}", timestamp, ++counter);
 }
 
+void persist_destination_log(const TransferTask& task) {
+  const auto destination = parse_endpoint(task.destination);
+  if (destination.remote) return;
+
+  std::error_code error;
+  std::filesystem::create_directories(destination.path, error);
+  if (error) return;
+  std::ofstream log{std::filesystem::path{destination.path} /
+                        (std::string{".rsync-assistant-"} + task.id + ".log"),
+                    std::ios::trunc};
+  if (!log) return;
+  log << "task: " << task.id << '\n'
+      << "command: " << task.command << "\n\n"
+      << task.output;
+}
+
 class Statement {
  public:
   Statement(sqlite3* database, const char* sql) : database_(database) {
@@ -286,7 +302,9 @@ TransferTask TaskControlService::await_completion(const std::string& task_id) {
   check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update completion");
   const auto refreshed = list_tasks();
-  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+  const auto completed = *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+  persist_destination_log(completed);
+  return completed;
 }
 
 }  // namespace rsync_assistant
