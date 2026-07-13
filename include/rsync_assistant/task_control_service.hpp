@@ -14,6 +14,7 @@ struct CreateReadyTask {
   std::string destination;
   bool delete_extraneous = false;
   bool compression = false;
+  bool dry_run = true;
 };
 
 struct TransferTask {
@@ -25,6 +26,7 @@ struct TransferTask {
   std::string output;
   bool delete_extraneous = false;
   bool compression = false;
+  bool dry_run = true;
 };
 
 class TaskControlService {

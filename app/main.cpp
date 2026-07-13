@@ -1,6 +1,7 @@
 #include "rsync_assistant/task_control_socket.hpp"
 #include "rsync_assistant/directory_scanner.hpp"
 #include "rsync_assistant/endpoint.hpp"
+#include "rsync_assistant/settings.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -29,7 +30,8 @@ int run_daemon(const std::filesystem::path& state_dir) {
   return 0;
 }
 
-int run_tui(const std::filesystem::path& state_dir) {
+int run_tui(const std::filesystem::path& state_dir,
+            const rsync_assistant::Settings& settings) {
   rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
   auto screen = ftxui::ScreenInteractive::Fullscreen();
   std::string status = "r: refresh  q: quit";
@@ -40,7 +42,8 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::string source;
   std::string destination;
   bool delete_extraneous = false;
-  bool compression = false;
+  bool compression = settings.compression;
+  bool dry_run = settings.dry_run;
   bool delete_confirming = false;
   std::string delete_confirmation;
   bool browsing = false;
@@ -55,8 +58,9 @@ int run_tui(const std::filesystem::path& state_dir) {
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
+  auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, compression_checkbox, delete_checkbox, delete_confirmation_input});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -125,6 +129,7 @@ int run_tui(const std::filesystem::path& state_dir) {
                         ftxui::window(ftxui::text("New task"),
                                       ftxui::vbox({source_input->Render(),
                                                    destination_input->Render(),
+                                                   dry_run_checkbox->Render(),
                                                    compression_checkbox->Render(),
                                                    delete_checkbox->Render(),
                                                    ftxui::separator(),
@@ -223,11 +228,12 @@ int run_tui(const std::filesystem::path& state_dir) {
           return true;
         }
         if (creating) {
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run});
           source.clear();
           destination.clear();
           delete_extraneous = false;
-          compression = false;
+          compression = settings.compression;
+          dry_run = settings.dry_run;
           creating = false;
           refresh();
         } else if (!tasks.empty()) {
@@ -288,18 +294,31 @@ int run_tui(const std::filesystem::path& state_dir) {
 
 int main(int argc, char* argv[]) {
   try {
-    if (argc == 2 && std::string_view{argv[1]} == "--control-ping") {
+    const auto option_value = [&](std::string_view option) -> const char* {
+      for (int index = 1; index + 1 < argc; ++index)
+        if (std::string_view{argv[index]} == option) return argv[index + 1];
+      return nullptr;
+    };
+    const auto has_argument = [&](std::string_view argument) {
+      for (int index = 1; index < argc; ++index)
+        if (std::string_view{argv[index]} == argument) return true;
+      return false;
+    };
+    rsync_assistant::Settings settings;
+    if (const auto* config = option_value("--config"))
+      settings = rsync_assistant::Settings::load(config);
+    if (has_argument("--control-ping")) {
       std::cout << "rsync-assistant-control-v1\n";
       return 0;
     }
-    if (argc == 3 && std::string_view{argv[1]} == "--control-list") {
+    if (const auto* path = option_value("--control-list")) {
       for (const auto& entry : std::filesystem::directory_iterator(
-               argv[2], std::filesystem::directory_options::skip_permission_denied))
+               path, std::filesystem::directory_options::skip_permission_denied))
         std::cout << entry.path().string() << '\n';
       return 0;
     }
-    if (argc == 3 && std::string_view{argv[1]} == "--write-default-config") {
-      const auto path = std::filesystem::absolute(argv[2]);
+    if (const auto* requested_path = option_value("--write-default-config")) {
+      const auto path = std::filesystem::absolute(requested_path);
       std::filesystem::create_directories(path.parent_path());
       std::ofstream output{path};
       output << "# rsync-assistant local settings\n"
@@ -317,8 +336,8 @@ int main(int argc, char* argv[]) {
       std::cout << path << '\n';
       return 0;
     }
-    if (argc == 3 && std::string_view{argv[1]} == "--write-rsyncd-config") {
-      const auto path = std::filesystem::absolute(argv[2]);
+    if (const auto* requested_path = option_value("--write-rsyncd-config")) {
+      const auto path = std::filesystem::absolute(requested_path);
       std::filesystem::create_directories(path.parent_path());
       std::ofstream output{path};
       output << "# Review binding, authentication and firewall rules before starting rsync daemon.\n"
@@ -336,9 +355,8 @@ int main(int argc, char* argv[]) {
       return 0;
     }
     const auto state_dir = state_directory(argc, argv);
-    const std::string_view mode = argc >= 2 ? argv[1] : "";
-    if (mode == "daemon") return run_daemon(state_dir);
-    if (mode == "tui") return run_tui(state_dir);
+    if (has_argument("daemon")) return run_daemon(state_dir);
+    if (has_argument("tui")) return run_tui(state_dir, settings);
 
     try {
       (void)rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
@@ -351,7 +369,7 @@ int main(int argc, char* argv[]) {
       if (child < 0) throw std::runtime_error("cannot start daemon");
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    return run_tui(state_dir);
+    return run_tui(state_dir, settings);
   } catch (const std::exception& error) {
     std::cerr << "rsync-assistant: " << error.what() << '\n';
     return 1;

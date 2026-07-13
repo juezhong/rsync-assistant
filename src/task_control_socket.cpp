@@ -84,13 +84,15 @@ CreateReadyTask decode_request(const std::string& payload) {
   const auto first = payload.find('\0');
   const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
   const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
-  if (first == std::string::npos) throw std::runtime_error("invalid task request");
+  const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
+  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos)
+    throw std::runtime_error("invalid task request");
   const auto destination = payload.substr(first + 1,
-      second == std::string::npos ? std::string::npos : second - first - 1);
+                                          second - first - 1);
   return {payload.substr(0, first), destination,
-          second != std::string::npos && payload.substr(second + 1,
-              third == std::string::npos ? std::string::npos : third - second - 1) == "1",
-          third != std::string::npos && payload.substr(third + 1) == "1"};
+          payload.substr(second + 1, third - second - 1) == "1",
+          payload.substr(third + 1, fourth - third - 1) == "1",
+          payload.substr(fourth + 1) == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
@@ -101,7 +103,9 @@ std::string encode_task(const TransferTask& task) {
                      task.state == TaskState::completed ? "completed" :
                      task.state == TaskState::cancelled ? "cancelled" : "failed";
   return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state + '\0' +
-         (task.delete_extraneous ? "1" : "0");
+         (task.delete_extraneous ? "1" : "0") + '\0' +
+         (task.compression ? "1" : "0") + '\0' +
+         (task.dry_run ? "1" : "0");
 }
 
 TransferTask decode_task(const std::string& payload) {
@@ -109,12 +113,14 @@ TransferTask decode_task(const std::string& payload) {
   const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
   const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
   const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
-  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos)
+  const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
+  const auto sixth = fifth == std::string::npos ? fifth : payload.find('\0', fifth + 1);
+  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos)
     throw std::runtime_error("invalid task response");
   const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : TaskState::failed, "", "", payload.substr(fourth + 1) == "1"};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1) == "1"};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -135,7 +141,9 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
     const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
     const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
     const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
-    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos)
+    const auto sixth = fifth == std::string::npos ? fifth : payload.find('\0', fifth + 1);
+    const auto seventh = sixth == std::string::npos ? sixth : payload.find('\0', sixth + 1);
+    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos || seventh == std::string::npos)
       throw std::runtime_error("invalid task list response");
     const auto state = payload.substr(third + 1, fourth - third - 1);
     tasks.push_back({payload.substr(offset, first - offset),
@@ -144,8 +152,10 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      state == "ready" ? TaskState::ready :
                      state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
                      state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : TaskState::failed,
-                     "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1"});
-    offset = fifth + 1;
+                     "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1",
+                     payload.substr(fifth + 1, sixth - fifth - 1) == "1",
+                     payload.substr(sixth + 1, seventh - sixth - 1) == "1"});
+    offset = seventh + 1;
   }
   return tasks;
 }
@@ -296,7 +306,8 @@ TransferTask TaskControlSocketClient::create_ready_task(
     send_frame(descriptor, kCreateReadyTask,
                request.source + '\0' + request.destination + '\0' +
                    (request.delete_extraneous ? "1" : "0") + '\0' +
-                   (request.compression ? "1" : "0"));
+                   (request.compression ? "1" : "0") + '\0' +
+                   (request.dry_run ? "1" : "0"));
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
     require_response(type, kTaskResponse, payload, "task");

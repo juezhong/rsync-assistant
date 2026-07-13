@@ -86,7 +86,8 @@ struct TaskControlService::Impl {
                               "id TEXT PRIMARY KEY, source TEXT NOT NULL, "
                               "destination TEXT NOT NULL, state TEXT NOT NULL, "
                               "command TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', "
-                              "delete_extraneous INTEGER NOT NULL DEFAULT 0, compression INTEGER NOT NULL DEFAULT 0)",
+                              "delete_extraneous INTEGER NOT NULL DEFAULT 0, compression INTEGER NOT NULL DEFAULT 0, "
+                              "dry_run INTEGER NOT NULL DEFAULT 1)",
                               nullptr, nullptr, nullptr),
                  database, "create transfer_tasks table");
     char* migration_error = nullptr;
@@ -97,6 +98,9 @@ struct TaskControlService::Impl {
     if (migration != SQLITE_OK) sqlite3_free(migration_error);
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN compression INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 1",
                  nullptr, nullptr, nullptr);
   }
 
@@ -114,8 +118,8 @@ TransferTask TaskControlService::create_ready_task(
     throw std::invalid_argument("source and destination are required");
   const auto id = next_task_id();
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run) "
+                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -129,13 +133,15 @@ TransferTask TaskControlService::create_ready_task(
                impl_->database, "bind delete option");
   check_sqlite(sqlite3_bind_int(statement.get(), 5, request.compression),
                impl_->database, "bind compression option");
+  check_sqlite(sqlite3_bind_int(statement.get(), 6, request.dry_run),
+               impl_->database, "bind dry-run option");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
-  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression};
+  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -154,6 +160,7 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 5)),
         sqlite3_column_int(statement.get(), 6) != 0,
         sqlite3_column_int(statement.get(), 7) != 0,
+        sqlite3_column_int(statement.get(), 8) != 0,
     });
   }
   return tasks;
@@ -181,7 +188,8 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   if (remote_endpoint.remote && !remote_rsync_available(remote_endpoint))
     throw std::runtime_error("remote rsync is unavailable; confirm system scp fallback explicitly");
   const auto rsync = RsyncLocator{}.executable().string();
-  std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial", "--dry-run"};
+  std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
+  if (it->dry_run) arguments.push_back("--dry-run");
   if (it->delete_extraneous) arguments.push_back("--delete");
   if (it->compression) arguments.push_back("--compress");
   if (!source_endpoint.remote) {
@@ -191,9 +199,11 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
     }
   }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
-  const auto result = ProcessRunner{}.run(arguments);
+  const auto result = it->dry_run ? ProcessRunner{}.run(arguments) :
+                                  ProcessResult{0, "Dry-run disabled by task settings; command is ready for confirmation.\n"};
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
-  const auto command = rsync + " --recursive --links --times --partial --dry-run" +
+  const auto command = rsync + " --recursive --links --times --partial" +
+                       std::string{it->dry_run ? " --dry-run" : ""} +
                        std::string{it->delete_extraneous ? " --delete" : ""} +
                        " -- " + it->source + " " + it->destination;
   Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=? WHERE id=?"};
