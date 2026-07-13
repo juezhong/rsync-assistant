@@ -1,5 +1,6 @@
 #include "rsync_assistant/task_control_socket.hpp"
 #include "rsync_assistant/directory_scanner.hpp"
+#include "rsync_assistant/endpoint.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -48,6 +49,8 @@ int run_tui(const std::filesystem::path& state_dir) {
   int browse_selected = 0;
   bool browse_hidden = false;
   bool browse_destination = false;
+  bool browse_remote = false;
+  std::string browse_remote_prefix;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
@@ -147,17 +150,43 @@ int run_tui(const std::filesystem::path& state_dir) {
       return true;
     }
     if (creating && event == ftxui::Event::Character('b')) {
-      browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
       browse_destination = false;
+      const auto endpoint = rsync_assistant::parse_endpoint(source);
       browse_selected = 0;
-      try { scan_browser(); browsing = true; } catch (const std::exception& error) { status = error.what(); }
+      try {
+        if (endpoint.remote) {
+          if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
+          browse_entries.clear();
+          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) browse_entries.push_back({path, false, false});
+          browse_remote = true;
+          browse_remote_prefix = endpoint.host + ":";
+        } else {
+          browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
+          browse_remote = false;
+          scan_browser();
+        }
+        browsing = true;
+      } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
     if (creating && event == ftxui::Event::Character('B')) {
-      browse_directory = destination.empty() ? std::filesystem::current_path() : std::filesystem::path{destination};
       browse_destination = true;
+      const auto endpoint = rsync_assistant::parse_endpoint(destination);
       browse_selected = 0;
-      try { scan_browser(); browsing = true; } catch (const std::exception& error) { status = error.what(); }
+      try {
+        if (endpoint.remote) {
+          if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
+          browse_entries.clear();
+          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) browse_entries.push_back({path, false, false});
+          browse_remote = true;
+          browse_remote_prefix = endpoint.host + ":";
+        } else {
+          browse_directory = destination.empty() ? std::filesystem::current_path() : std::filesystem::path{destination};
+          browse_remote = false;
+          scan_browser();
+        }
+        browsing = true;
+      } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
     if (browsing) {
@@ -165,14 +194,15 @@ int run_tui(const std::filesystem::path& state_dir) {
       if (event == ftxui::Event::Character('g')) { browse_hidden = !browse_hidden; browse_selected = 0; scan_browser(); return true; }
       if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_entries.size())) { ++browse_selected; return true; }
       if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
-      if (event == ftxui::Event::Character('h')) { browse_directory = browse_directory.parent_path(); browse_selected = 0; scan_browser(); return true; }
+      if (!browse_remote && event == ftxui::Event::Character('h')) { browse_directory = browse_directory.parent_path(); browse_selected = 0; scan_browser(); return true; }
       if (!browse_entries.empty() && (event == ftxui::Event::Character('l'))) {
-        if (browse_entries.at(browse_selected).directory) { browse_directory = browse_entries.at(browse_selected).path; browse_selected = 0; scan_browser(); }
+        if (!browse_remote && browse_entries.at(browse_selected).directory) { browse_directory = browse_entries.at(browse_selected).path; browse_selected = 0; scan_browser(); }
         return true;
       }
       if (!browse_entries.empty() && (event == ftxui::Event::Return || event == ftxui::Event::Character(' '))) {
-        if (browse_destination) destination = browse_entries.at(browse_selected).path.string();
-        else source = browse_entries.at(browse_selected).path.string();
+        const auto selected_path = (browse_remote ? browse_remote_prefix : "") + browse_entries.at(browse_selected).path.string();
+        if (browse_destination) destination = selected_path;
+        else source = selected_path;
         browsing = false;
         return true;
       }
