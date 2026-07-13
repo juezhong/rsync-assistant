@@ -279,6 +279,7 @@ int run_tui(const std::filesystem::path& state_dir,
   std::string browse_remote_host;
   std::string browse_manual_host;
   std::string browse_manual_path;
+  bool browse_manual_path_editing = false;
   bool known_host_confirming = false;
   std::string known_host_confirmation;
   std::vector<std::string> browse_ssh_hosts;
@@ -545,8 +546,8 @@ int run_tui(const std::filesystem::path& state_dir,
                           ftxui::window(ftxui::text("Select source path"),
                                         ftxui::vbox({ftxui::paragraph(entries),
                                                      browse_remote && browse_remote_host.empty() ? browse_manual_host_input->Render() : ftxui::text(""),
-                                                     known_host_confirming ? known_host_confirmation_input->Render() : (browse_remote && !browse_remote_host.empty() ? browse_manual_path_input->Render() : ftxui::text("")),
-                                                     known_host_confirming ? ftxui::text("This removes only the selected OpenSSH known_hosts entry; it never accepts a replacement automatically.") : (browse_remote && !browse_remote_host.empty() ? ftxui::text("K: clear changed host key   Enter an absolute path above, or select entries below.") : ftxui::text(" "))})) | ftxui::center});
+                                                     known_host_confirming ? known_host_confirmation_input->Render() : (browse_manual_path_editing ? browse_manual_path_input->Render() : ftxui::text("")),
+                                                     known_host_confirming ? ftxui::text("This removes only the selected OpenSSH known_hosts entry; it never accepts a replacement automatically.") : (browse_remote && !browse_remote_host.empty() ? ftxui::text("m: enter absolute path   K: clear changed host key   Space: multi-select Source") : ftxui::text(" "))})) | ftxui::center});
     }
     ftxui::Elements contents;
     if (wizard_step == 0) {
@@ -713,6 +714,7 @@ int run_tui(const std::filesystem::path& state_dir,
             browse_remote_host.clear();
             browse_manual_host.clear();
             browse_manual_path.clear();
+            browse_manual_path_editing = false;
             browse_ssh_hosts = rsync_assistant::ssh_config_hosts();
             browse_entries.clear();
             browsing = true;
@@ -774,12 +776,14 @@ int run_tui(const std::filesystem::path& state_dir,
         if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
         return browse_manual_host_input->OnEvent(event);
       }
+      if (browse_remote && !browse_remote_host.empty() && event == ftxui::Event::Character('m')) { browse_manual_path_editing = true; return true; }
+      if (browse_remote && browse_manual_path_editing && event == ftxui::Event::Escape) { browse_manual_path_editing = false; browse_manual_path.clear(); return true; }
       if (browse_remote && !browse_remote_host.empty() && event == ftxui::Event::Character('K')) {
         known_host_confirming = true;
         known_host_confirmation.clear();
         return true;
       }
-      if (browse_remote && !browse_remote_host.empty() && browse_manual_path_input->OnEvent(event)) {
+      if (browse_remote && browse_manual_path_editing && browse_manual_path_input->OnEvent(event)) {
         return true;
       }
       if (browse_search) {
@@ -837,6 +841,7 @@ int run_tui(const std::filesystem::path& state_dir,
         if (browse_destination) destination = selected_path;
         else source = selected_path;
         browsing = false;
+        browse_manual_path_editing = false;
         active_form = wizard_step + 1;
         return true;
       }
