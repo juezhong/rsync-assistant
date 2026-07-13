@@ -8,6 +8,7 @@
 namespace rsync_assistant {
 
 enum class TaskState { ready, awaiting_execution_confirmation, running, paused, completed, failed, cancelled, interrupted };
+enum class TransferMethod { local_rsync, rsync_daemon, rsync_ssh, scp };
 
 struct CreateReadyTask {
   std::string source;
@@ -27,6 +28,7 @@ struct TransferTask {
   bool delete_extraneous = false;
   bool compression = false;
   bool dry_run = true;
+  TransferMethod method = TransferMethod::local_rsync;
 };
 
 class TaskControlService {

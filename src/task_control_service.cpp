@@ -132,6 +132,9 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 1",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN method TEXT NOT NULL DEFAULT 'local_rsync'",
+                 nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
                               "WHERE state IN ('running', 'paused')",
@@ -152,9 +155,13 @@ TransferTask TaskControlService::create_ready_task(
   if (request.source.empty() || request.destination.empty())
     throw std::invalid_argument("source and destination are required");
   const auto id = next_task_id();
+  const auto source_endpoint = parse_endpoint(request.source);
+  const auto destination_endpoint = parse_endpoint(request.destination);
+  const auto method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
+                      (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method) "
+                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -170,13 +177,15 @@ TransferTask TaskControlService::create_ready_task(
                impl_->database, "bind compression option");
   check_sqlite(sqlite3_bind_int(statement.get(), 6, request.dry_run),
                impl_->database, "bind dry-run option");
+  check_sqlite(sqlite3_bind_text(statement.get(), 7, method, -1, SQLITE_TRANSIENT),
+               impl_->database, "bind transfer method");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
   return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -197,6 +206,9 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
         sqlite3_column_int(statement.get(), 6) != 0,
         sqlite3_column_int(statement.get(), 7) != 0,
         sqlite3_column_int(statement.get(), 8) != 0,
+        std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "rsync_daemon" ? TransferMethod::rsync_daemon :
+        std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "rsync_ssh" ? TransferMethod::rsync_ssh :
+        std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "scp" ? TransferMethod::scp : TransferMethod::local_rsync,
     });
   }
   return tasks;
@@ -323,7 +335,7 @@ TransferTask TaskControlService::execute_scp_fallback(const std::string& task_id
     std::lock_guard lock{impl_->process_mutex};
     impl_->processes.emplace(task_id, std::move(process));
   }
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output='' WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output='', method='scp' WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, "running", -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   const auto command = std::string{RSYNC_ASSISTANT_SCP_PATH} + " -r -- " + it->source + " " + it->destination;
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
