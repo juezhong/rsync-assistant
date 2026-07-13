@@ -173,6 +173,8 @@ TransferTask TaskControlService::create_ready_task(
     const CreateReadyTask& request) {
   if (request.source.empty() || request.destination.empty())
     throw std::invalid_argument("source and destination are required");
+  if (request.delete_extraneous && !request.dry_run)
+    throw std::invalid_argument("delete requires dry-run to remain enabled");
   const auto id = next_task_id();
   const auto source_endpoint = parse_endpoint(request.source);
   const auto destination_endpoint = parse_endpoint(request.destination);
