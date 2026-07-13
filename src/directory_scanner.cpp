@@ -42,13 +42,20 @@ std::vector<PathEntry> scan_directory_level(const std::filesystem::path& directo
 }
 
 std::vector<std::filesystem::path> search_paths(const std::filesystem::path& root,
-                                                 const std::string& query) {
+                                                 const std::string& query,
+                                                 bool include_hidden) {
   if (std::filesystem::is_regular_file(RSYNC_ASSISTANT_FD_PATH)) {
-    const auto result = ProcessRunner{}.run({RSYNC_ASSISTANT_FD_PATH, "--type", "f", "--type", "d", query, root.string()});
+    std::vector<std::string> arguments{RSYNC_ASSISTANT_FD_PATH, "--type", "f", "--type", "d"};
+    if (include_hidden) arguments.push_back("--hidden");
+    arguments.insert(arguments.end(), {query, root.string()});
+    const auto result = ProcessRunner{}.run(arguments);
     if (result.exit_code == 0) return lines_to_paths(result.output);
   }
   if (std::filesystem::is_regular_file(RSYNC_ASSISTANT_RG_PATH)) {
-    const auto result = ProcessRunner{}.run({RSYNC_ASSISTANT_RG_PATH, "--files", root.string()});
+    std::vector<std::string> arguments{RSYNC_ASSISTANT_RG_PATH, "--files"};
+    if (include_hidden) arguments.push_back("--hidden");
+    arguments.push_back(root.string());
+    const auto result = ProcessRunner{}.run(arguments);
     if (result.exit_code == 0) {
       auto paths = lines_to_paths(result.output);
       paths.erase(std::remove_if(paths.begin(), paths.end(), [&](const auto& path) {
@@ -60,6 +67,8 @@ std::vector<std::filesystem::path> search_paths(const std::filesystem::path& roo
   std::vector<std::filesystem::path> paths;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(
            root, std::filesystem::directory_options::skip_permission_denied)) {
+    const auto name = entry.path().filename().string();
+    if (!include_hidden && !name.empty() && name.front() == '.') continue;
     if (entry.path().filename().string().find(query) != std::string::npos)
       paths.push_back(entry.path());
   }

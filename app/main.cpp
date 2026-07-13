@@ -11,6 +11,7 @@
 #include <ftxui/dom/elements.hpp>
 
 #include <chrono>
+#include <algorithm>
 #include <cerrno>
 #include <exception>
 #include <fcntl.h>
@@ -172,6 +173,9 @@ int run_tui(const std::filesystem::path& state_dir,
   std::vector<rsync_assistant::PathEntry> browse_entries;
   int browse_selected = 0;
   bool browse_hidden = false;
+  bool browse_include_ignored = false;
+  bool browse_search = false;
+  std::string browse_query;
   bool browse_destination = false;
   bool browse_remote = false;
   std::filesystem::path browse_root;
@@ -186,6 +190,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
   auto include_git_checkbox = ftxui::Checkbox("Include repository data (.git)", &include_git_data);
+  auto browse_search_input = ftxui::Input(&browse_query, "Search paths");
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
@@ -195,9 +200,29 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
-    browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
+    if (browse_search && !browse_query.empty()) {
+      browse_entries.clear();
+      for (const auto& path : rsync_assistant::search_paths(browse_root, browse_query, browse_hidden))
+        browse_entries.push_back({path, std::filesystem::is_directory(path), false});
+    } else {
+      browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
+    }
+    if (!browse_include_ignored && !browse_remote) {
+      const auto profile = rsync_assistant::detect_project_profile(browse_root);
+      browse_entries.erase(std::remove_if(browse_entries.begin(), browse_entries.end(), [&](const auto& entry) {
+        std::error_code error;
+        const auto relative = std::filesystem::relative(entry.path, browse_root, error).generic_string();
+        if (error) return false;
+        if (relative == ".git" || relative.starts_with(".git/")) return true;
+        for (const auto& exclusion : profile.exclusions) {
+          const auto prefix = exclusion.ends_with('/') ? exclusion.substr(0, exclusion.size() - 1) : exclusion;
+          if (relative == prefix || relative.starts_with(prefix + "/")) return true;
+        }
+        return false;
+      }), browse_entries.end());
+    }
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
   };
   auto refresh = [&] {
@@ -279,8 +304,9 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (!creating) return dashboard;
     if (browsing) {
-      std::string entries = browse_destination ? "h: parent  l: enter  g: hidden  Enter: select\n\n" :
-                                                 "h: parent  l: enter  g: hidden  Space: toggle  f: flatten  Enter: confirm\n\n";
+      std::string entries = browse_destination ? "h: parent  l: enter  /: search  g: hidden  i: ignored  Enter: select\n\n" :
+                                                 "h: parent  l: enter  /: search  g: hidden  i: ignored  Space: toggle  F: flatten  Enter: confirm\n\n";
+      if (browse_search) entries += "Search: " + browse_query + " (Enter: apply, Esc: cancel)\n";
       entries += browse_directory.string() + "\n";
       for (std::size_t index = 0; index < browse_entries.size(); ++index)
         entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} +
@@ -375,6 +401,9 @@ int run_tui(const std::filesystem::path& state_dir,
           browse_root = browse_directory;
           browse_selected_paths.clear();
           flatten_selection = false;
+          browse_search = false;
+          browse_query.clear();
+          browse_include_ignored = false;
           browse_remote = false;
           scan_browser();
         }
@@ -408,8 +437,16 @@ int run_tui(const std::filesystem::path& state_dir,
       return true;
     }
     if (browsing) {
+      if (browse_search) {
+        if (event == ftxui::Event::Escape) { browse_search = false; browse_query.clear(); scan_browser(); return true; }
+        if (event == ftxui::Event::Return) { browse_search = false; scan_browser(); return true; }
+        if (browse_search_input->OnEvent(event)) { scan_browser(); return true; }
+        return true;
+      }
       if (event == ftxui::Event::Escape) { browsing = false; return true; }
+      if (!browse_remote && event == ftxui::Event::Character('/')) { browse_search = true; browse_query.clear(); return true; }
       if (event == ftxui::Event::Character('g')) { browse_hidden = !browse_hidden; browse_selected = 0; scan_browser(); return true; }
+      if (event == ftxui::Event::Character('i')) { browse_include_ignored = !browse_include_ignored; browse_selected = 0; scan_browser(); return true; }
       if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_entries.size())) { ++browse_selected; return true; }
       if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
       if (event == ftxui::Event::Character('h')) {
@@ -451,7 +488,7 @@ int run_tui(const std::filesystem::path& state_dir,
         else browse_selected_paths.insert(path);
         return true;
       }
-      if (!browse_destination && !browse_remote && event == ftxui::Event::Character('f')) {
+      if (!browse_destination && !browse_remote && event == ftxui::Event::Character('F')) {
         flatten_selection = !flatten_selection;
         return true;
       }

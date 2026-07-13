@@ -15,6 +15,7 @@ struct PathEntry {
 [[nodiscard]] std::vector<PathEntry> scan_directory_level(
     const std::filesystem::path& directory, bool include_hidden = false);
 [[nodiscard]] std::vector<std::filesystem::path> search_paths(
-    const std::filesystem::path& root, const std::string& query);
+    const std::filesystem::path& root, const std::string& query,
+    bool include_hidden = false);
 
 }  // namespace rsync_assistant
