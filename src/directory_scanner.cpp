@@ -1,9 +1,26 @@
 #include "rsync_assistant/directory_scanner.hpp"
 
+#include "rsync_assistant/process_runner.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 
 namespace rsync_assistant {
+
+namespace {
+std::vector<std::filesystem::path> lines_to_paths(const std::string& output) {
+  std::vector<std::filesystem::path> paths;
+  std::size_t start = 0;
+  while (start < output.size()) {
+    const auto end = output.find('\n', start);
+    const auto line = output.substr(start, end - start);
+    if (!line.empty()) paths.emplace_back(line);
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return paths;
+}
+}  // namespace
 
 std::vector<PathEntry> scan_directory_level(const std::filesystem::path& directory,
                                             bool include_hidden) {
@@ -22,6 +39,31 @@ std::vector<PathEntry> scan_directory_level(const std::filesystem::path& directo
     return left.path.filename().string() < right.path.filename().string();
   });
   return entries;
+}
+
+std::vector<std::filesystem::path> search_paths(const std::filesystem::path& root,
+                                                 const std::string& query) {
+  if (std::filesystem::is_regular_file(RSYNC_ASSISTANT_FD_PATH)) {
+    const auto result = ProcessRunner{}.run({RSYNC_ASSISTANT_FD_PATH, "--type", "f", "--type", "d", query, root.string()});
+    if (result.exit_code == 0) return lines_to_paths(result.output);
+  }
+  if (std::filesystem::is_regular_file(RSYNC_ASSISTANT_RG_PATH)) {
+    const auto result = ProcessRunner{}.run({RSYNC_ASSISTANT_RG_PATH, "--files", root.string()});
+    if (result.exit_code == 0) {
+      auto paths = lines_to_paths(result.output);
+      paths.erase(std::remove_if(paths.begin(), paths.end(), [&](const auto& path) {
+        return path.filename().string().find(query) == std::string::npos;
+      }), paths.end());
+      return paths;
+    }
+  }
+  std::vector<std::filesystem::path> paths;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(
+           root, std::filesystem::directory_options::skip_permission_denied)) {
+    if (entry.path().filename().string().find(query) != std::string::npos)
+      paths.push_back(entry.path());
+  }
+  return paths;
 }
 
 }  // namespace rsync_assistant

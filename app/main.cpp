@@ -45,12 +45,13 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
   int browse_selected = 0;
+  bool browse_hidden = false;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto form = ftxui::Container::Vertical({source_input, destination_input, delete_checkbox});
   auto scan_browser = [&] {
-    browse_entries = rsync_assistant::scan_directory_level(browse_directory);
+    browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
   };
   auto refresh = [&] {
@@ -96,7 +97,7 @@ int run_tui(const std::filesystem::path& state_dir) {
     });
     if (!creating) return dashboard;
     if (browsing) {
-      std::string entries = "h: parent  l: enter  Space/Enter: select\n\n";
+      std::string entries = "h: parent  l: enter  g: hidden  Space/Enter: select\n\n";
       entries += browse_directory.string() + "\n";
       for (std::size_t index = 0; index < browse_entries.size(); ++index)
         entries += (static_cast<int>(index) == browse_selected ? "> " : "  ") +
@@ -136,6 +137,7 @@ int run_tui(const std::filesystem::path& state_dir) {
     }
     if (browsing) {
       if (event == ftxui::Event::Escape) { browsing = false; return true; }
+      if (event == ftxui::Event::Character('g')) { browse_hidden = !browse_hidden; browse_selected = 0; scan_browser(); return true; }
       if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_entries.size())) { ++browse_selected; return true; }
       if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
       if (event == ftxui::Event::Character('h')) { browse_directory = browse_directory.parent_path(); browse_selected = 0; scan_browser(); return true; }
