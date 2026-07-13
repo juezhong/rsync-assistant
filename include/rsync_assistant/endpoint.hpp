@@ -23,5 +23,9 @@ struct RemoteTaskStatus {
 [[nodiscard]] bool remote_assistant_available(const Endpoint& endpoint);
 [[nodiscard]] std::vector<std::string> remote_assistant_list(const Endpoint& endpoint);
 [[nodiscard]] std::vector<RemoteTaskStatus> remote_assistant_tasks(const Endpoint& endpoint);
+[[nodiscard]] std::string remote_assistant_benchmark_root(const Endpoint& endpoint,
+                                                           const std::string& token);
+void remote_assistant_cleanup_benchmark(const Endpoint& endpoint,
+                                        const std::string& token);
 
 }  // namespace rsync_assistant

@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <exception>
 #include <fcntl.h>
@@ -160,6 +161,12 @@ std::string draft_command_proposal(const std::string& source, const std::string&
     result += quote_preview(argument);
   }
   return result;
+}
+
+bool valid_benchmark_token(std::string_view token) {
+  return !token.empty() && token.size() <= 80 && std::all_of(token.begin(), token.end(), [](unsigned char character) {
+    return std::isalnum(character) || character == '-' || character == '_';
+  });
 }
 
 int run_daemon(const std::filesystem::path& state_dir) {
@@ -848,6 +855,23 @@ int main(int argc, char* argv[]) {
       };
       for (const auto& task : tasks)
         std::cout << task.id << '\t' << state_name(task.state) << '\t' << method_name(task.method) << '\n';
+      return 0;
+    }
+    if (const auto* token = option_value("--control-benchmark-root")) {
+      if (!valid_benchmark_token(token)) throw std::runtime_error("invalid benchmark token");
+      const auto root = state_dir / "benchmarks" / token;
+      std::filesystem::create_directories(root);
+      std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                                   std::filesystem::perm_options::replace);
+      std::cout << root.string() << '\n';
+      return 0;
+    }
+    if (const auto* token = option_value("--control-benchmark-clean")) {
+      if (!valid_benchmark_token(token)) throw std::runtime_error("invalid benchmark token");
+      const auto root = state_dir / "benchmarks" / token;
+      std::error_code error;
+      std::filesystem::remove_all(root, error);
+      if (error) throw std::runtime_error("cannot clean benchmark root: " + error.message());
       return 0;
     }
     if (const auto* path = option_value("--control-list")) {

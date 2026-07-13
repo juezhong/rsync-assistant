@@ -96,4 +96,29 @@ std::vector<RemoteTaskStatus> remote_assistant_tasks(const Endpoint& endpoint) {
   return tasks;
 }
 
+std::string remote_assistant_benchmark_root(const Endpoint& endpoint,
+                                            const std::string& token) {
+  if (!remote_assistant_available(endpoint))
+    throw std::runtime_error("remote assistant is unavailable");
+  const auto command = "rsync-assistant --control-benchmark-root " + remote_shell_quote(token);
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+       "--", endpoint.host, command});
+  if (result.exit_code != 0 || result.output.empty())
+    throw std::runtime_error("remote benchmark root request failed");
+  const auto line_end = result.output.find('\n');
+  return result.output.substr(0, line_end);
+}
+
+void remote_assistant_cleanup_benchmark(const Endpoint& endpoint,
+                                        const std::string& token) {
+  if (!remote_assistant_available(endpoint)) return;
+  const auto command = "rsync-assistant --control-benchmark-clean " + remote_shell_quote(token);
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+       "--", endpoint.host, command});
+  if (result.exit_code != 0)
+    throw std::runtime_error("remote benchmark cleanup failed");
+}
+
 }  // namespace rsync_assistant
