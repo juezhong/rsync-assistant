@@ -15,6 +15,14 @@ std::string unquote(std::string value) {
   return value.size() >= 2 && value.front() == '"' && value.back() == '"'
              ? value.substr(1, value.size() - 2) : value;
 }
+std::string quote(const std::string& value) {
+  std::string result{"\""};
+  for (const char character : value) {
+    if (character == '\\' || character == '\"') result += '\\';
+    result += character;
+  }
+  return result + "\"";
+}
 }  // namespace
 
 Settings Settings::load(const std::filesystem::path& path) {
@@ -45,6 +53,25 @@ Settings Settings::load(const std::filesystem::path& path) {
   if (settings.ai_enabled && !settings.api_key.empty() && (permissions & public_bits) != std::filesystem::perms::none)
     throw std::runtime_error("AI settings require an owner-only configuration file");
   return settings;
+}
+
+void Settings::save(const std::filesystem::path& path) const {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream output{path, std::ios::trunc};
+  if (!output) throw std::runtime_error("cannot write settings");
+  output << "[transfer]\n"
+         << "dry_run = " << (dry_run ? "true" : "false") << "\n"
+         << "compression = " << (compression ? "true" : "false") << "\n"
+         << "benchmark_enabled = " << (benchmark_enabled ? "true" : "false") << "\n\n"
+         << "[ai]\n"
+         << "enabled = " << (ai_enabled ? "true" : "false") << "\n"
+         << "endpoint = " << quote(ai_endpoint) << "\n"
+         << "model = " << quote(ai_model) << "\n"
+         << "api_key = " << quote(api_key) << "\n";
+  if (!output) throw std::runtime_error("cannot finish writing settings");
+  std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                      std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::replace);
 }
 
 }  // namespace rsync_assistant
