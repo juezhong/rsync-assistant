@@ -11,6 +11,7 @@
 #include <string_view>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <poll.h>
 #include <thread>
 #include <unistd.h>
 
@@ -241,6 +242,9 @@ void TaskControlSocketServer::serve() {
   }
   impl_->listener.store(listener);
   while (impl_->listener.load() == listener) {
+    pollfd ready{listener, POLLIN, 0};
+    const auto poll_result = poll(&ready, 1, 100);
+    if (poll_result <= 0 || (ready.revents & POLLIN) == 0) continue;
     const int client = accept(listener, nullptr, nullptr);
     if (client < 0) continue;
     try {

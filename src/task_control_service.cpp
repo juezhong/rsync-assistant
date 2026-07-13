@@ -443,21 +443,33 @@ TransferTask TaskControlService::execute_scp_fallback(const std::string& task_id
 }
 
 TransferTask TaskControlService::pause(const std::string& task_id) {
+  const auto tasks = list_tasks();
+  const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto& item) { return item.id == task_id; });
+  if (task != tasks.end() && task->method == TransferMethod::scp)
+    throw std::runtime_error("scp tasks do not support pause or resume");
   std::lock_guard lock{impl_->process_mutex};
   auto it = impl_->processes.find(task_id);
   if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
   it->second.pause();
-  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='paused' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state='paused' WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "pause task");
   const auto refreshed = list_tasks();
   return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
 }
 
 TransferTask TaskControlService::resume(const std::string& task_id) {
+  const auto tasks = list_tasks();
+  const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto& item) { return item.id == task_id; });
+  if (task != tasks.end() && task->method == TransferMethod::scp)
+    throw std::runtime_error("scp tasks do not support pause or resume");
   std::lock_guard lock{impl_->process_mutex};
   auto it = impl_->processes.find(task_id);
   if (it == impl_->processes.end()) throw std::runtime_error("task is not paused");
   it->second.resume();
-  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='running' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state='running' WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "resume task");
   const auto refreshed = list_tasks();
   return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
 }
@@ -468,7 +480,9 @@ TransferTask TaskControlService::stop(const std::string& task_id) {
   if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
   it->second.stop();
   impl_->processes.erase(it);
-  sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='cancelled' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state='cancelled' WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "cancel task");
   const auto refreshed = list_tasks();
   return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
 }
@@ -478,6 +492,8 @@ TransferTask TaskControlService::restart(const std::string& task_id) {
   const auto it = std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == task_id; });
   if (it == tasks.end() || (it->state != TaskState::failed && it->state != TaskState::interrupted))
     throw std::runtime_error("only failed or interrupted rsync tasks can be re-prepared");
+  if (it->method == TransferMethod::scp)
+    throw std::runtime_error("scp tasks cannot claim rsync restart or resume behavior");
   Statement statement{impl_->database,
                       "UPDATE transfer_tasks SET state='ready', command='', output='' WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT),

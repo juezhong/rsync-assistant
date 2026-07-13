@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cerrno>
+#include <exception>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,10 @@
 #include <unistd.h>
 
 namespace {
+volatile sig_atomic_t daemon_stop_requested = 0;
+
+void request_daemon_stop(int) { daemon_stop_requested = 1; }
+
 class TuiSessionLock {
  public:
   explicit TuiSessionLock(const std::filesystem::path& state_dir)
@@ -119,7 +124,19 @@ int run_daemon(const std::filesystem::path& state_dir) {
   }
   rsync_assistant::TaskControlService service{state_dir / "tasks.sqlite3"};
   rsync_assistant::TaskControlSocketServer server{service, state_dir / "control.sock"};
-  server.serve();
+  daemon_stop_requested = 0;
+  signal(SIGINT, request_daemon_stop);
+  signal(SIGTERM, request_daemon_stop);
+  std::exception_ptr serve_error;
+  std::thread server_thread{[&] {
+    try { server.serve(); }
+    catch (...) { serve_error = std::current_exception(); daemon_stop_requested = 1; }
+  }};
+  while (!daemon_stop_requested)
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  server.stop();
+  server_thread.join();
+  if (serve_error) std::rethrow_exception(serve_error);
   return 0;
 }
 
