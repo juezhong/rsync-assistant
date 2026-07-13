@@ -94,6 +94,8 @@ TaskControlService::~TaskControlService() = default;
 
 TransferTask TaskControlService::create_ready_task(
     const CreateReadyTask& request) {
+  if (request.source.empty() || request.destination.empty())
+    throw std::invalid_argument("source and destination are required");
   const auto id = next_task_id();
   Statement statement{impl_->database,
                       "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression) "

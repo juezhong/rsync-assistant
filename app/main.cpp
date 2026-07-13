@@ -47,6 +47,7 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::vector<rsync_assistant::PathEntry> browse_entries;
   int browse_selected = 0;
   bool browse_hidden = false;
+  bool browse_destination = false;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
@@ -147,6 +148,14 @@ int run_tui(const std::filesystem::path& state_dir) {
     }
     if (creating && event == ftxui::Event::Character('b')) {
       browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
+      browse_destination = false;
+      browse_selected = 0;
+      try { scan_browser(); browsing = true; } catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (creating && event == ftxui::Event::Character('B')) {
+      browse_directory = destination.empty() ? std::filesystem::current_path() : std::filesystem::path{destination};
+      browse_destination = true;
       browse_selected = 0;
       try { scan_browser(); browsing = true; } catch (const std::exception& error) { status = error.what(); }
       return true;
@@ -162,7 +171,8 @@ int run_tui(const std::filesystem::path& state_dir) {
         return true;
       }
       if (!browse_entries.empty() && (event == ftxui::Event::Return || event == ftxui::Event::Character(' '))) {
-        source = browse_entries.at(browse_selected).path.string();
+        if (browse_destination) destination = browse_entries.at(browse_selected).path.string();
+        else source = browse_entries.at(browse_selected).path.string();
         browsing = false;
         return true;
       }
