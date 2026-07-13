@@ -353,7 +353,8 @@ int run_tui(const std::filesystem::path& state_dir,
       };
       for (std::size_t index = 0; index < tasks.size(); ++index)
         task_lines += (static_cast<int>(index) == selected ? "> " : "  ") +
-                      std::string{label(tasks[index].state)} + " " + tasks[index].id + "\n";
+                      std::string{label(tasks[index].state)} + " " + tasks[index].id +
+                      (tasks[index].exit_code ? " (exit " + std::to_string(*tasks[index].exit_code) + ")" : "") + "\n";
       for (std::size_t index = 0; index < tasks.size(); ++index) {
         const auto marker = static_cast<int>(index) == selected ? "> " : "  ";
         task_lines += marker + std::string{"  via "} + method_label(tasks[index].method) + "\n";
