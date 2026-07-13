@@ -28,6 +28,7 @@ struct CreateReadyTask {
   bool flatten_selection = false;
   bool include_git_data = false;
   bool include_project_ignored = false;
+  bool create_destination_parents = false;
 };
 
 struct TransferTask {

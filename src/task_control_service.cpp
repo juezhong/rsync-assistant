@@ -195,6 +195,18 @@ TransferTask TaskControlService::create_ready_task(
   const auto id = next_task_id();
   const auto source_endpoint = parse_endpoint(request.source);
   const auto destination_endpoint = parse_endpoint(request.destination);
+  if (!destination_endpoint.remote) {
+    const std::filesystem::path destination_path{destination_endpoint.path};
+    if (std::filesystem::exists(destination_path) && !std::filesystem::is_directory(destination_path))
+      throw std::invalid_argument("destination must be a directory");
+    if (!std::filesystem::exists(destination_path.parent_path())) {
+      if (!request.create_destination_parents)
+        throw std::invalid_argument("destination parent does not exist; explicitly allow parent creation");
+      std::error_code error;
+      std::filesystem::create_directories(destination_path.parent_path(), error);
+      if (error) throw std::runtime_error("cannot create destination parent directories");
+    }
+  }
   if (!request.ssh_destination.empty()) {
     const auto ssh_destination = parse_endpoint(request.ssh_destination);
     if (!destination_endpoint.rsync_daemon || !ssh_destination.remote || ssh_destination.rsync_daemon ||

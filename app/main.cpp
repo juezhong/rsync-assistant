@@ -243,6 +243,7 @@ int run_tui(const std::filesystem::path& state_dir,
   std::vector<std::string> selected_source_paths;
   bool flatten_selection = false;
   bool copy_source_contents = false;
+  bool create_destination_parents = false;
   bool delete_extraneous = false;
   bool compression = settings.compression;
   bool dry_run = settings.dry_run;
@@ -285,6 +286,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
   auto copy_source_contents_checkbox = ftxui::Checkbox("Copy directory contents only (project/ -> destination/...)", &copy_source_contents);
+  auto create_destination_parents_checkbox = ftxui::Checkbox("Create missing Destination parent directories", &create_destination_parents);
   auto include_git_checkbox = ftxui::Checkbox("Include repository data (.git)", &include_git_data);
   auto include_project_ignored_checkbox = ftxui::Checkbox("Include detected build/dependency paths", &include_project_ignored);
   auto browse_search_input = ftxui::Input(&browse_query, "Search paths");
@@ -309,7 +311,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
   auto source_form = ftxui::Container::Vertical({source_input});
   auto destination_form = ftxui::Container::Vertical({destination_input});
-  auto option_form = ftxui::Container::Vertical({copy_source_contents_checkbox, dry_run_checkbox, compression_checkbox, delete_checkbox,
+  auto option_form = ftxui::Container::Vertical({copy_source_contents_checkbox, create_destination_parents_checkbox, dry_run_checkbox, compression_checkbox, delete_checkbox,
                                                    trusted_daemon_checkbox, include_git_checkbox,
                                                    include_project_ignored_checkbox});
   auto delete_form = ftxui::Container::Vertical({delete_confirmation_input});
@@ -517,7 +519,7 @@ int run_tui(const std::filesystem::path& state_dir,
     } else if (wizard_step == 2) {
       contents = {ftxui::text("Step 3/4: transfer options"),
                   ftxui::text("Directory Source mode: preserve directory level is the default."),
-                  copy_source_contents_checkbox->Render(), dry_run_checkbox->Render(),
+                  copy_source_contents_checkbox->Render(), create_destination_parents_checkbox->Render(), dry_run_checkbox->Render(),
                   compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(),
                   source_has_git_repository ? include_git_checkbox->Render() : ftxui::text("No .git repository detected at source root"),
                   source_has_project_ignores ? include_project_ignored_checkbox->Render() : ftxui::text("No detected project build/dependency paths"), ftxui::separator(),
@@ -593,6 +595,7 @@ int run_tui(const std::filesystem::path& state_dir,
       selected_source_paths.clear();
       flatten_selection = false;
       copy_source_contents = false;
+      create_destination_parents = false;
       delete_extraneous = false;
       compression = settings.compression;
       dry_run = settings.dry_run;
@@ -879,7 +882,9 @@ int run_tui(const std::filesystem::path& state_dir,
           }
           auto task_source = source;
           if (copy_source_contents && selected_source_paths.empty() && !task_source.empty() && !task_source.ends_with('/')) task_source += '/';
-          (void)client.create_ready_task({task_source, destination, delete_extraneous, compression, dry_run, trusted_daemon, {}, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
+          rsync_assistant::CreateReadyTask request{task_source, destination, delete_extraneous, compression, dry_run, trusted_daemon, {}, selected_source_paths, flatten_selection, include_git_data, include_project_ignored};
+          request.create_destination_parents = create_destination_parents;
+          (void)client.create_ready_task(request);
           source.clear();
           destination.clear();
           delete_extraneous = false;
@@ -893,6 +898,7 @@ int run_tui(const std::filesystem::path& state_dir,
           selected_source_paths.clear();
           flatten_selection = false;
           copy_source_contents = false;
+          create_destination_parents = false;
           creating = false;
           wizard_step = 0;
           active_form = 0;
