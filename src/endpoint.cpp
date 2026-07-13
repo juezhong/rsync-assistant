@@ -74,4 +74,26 @@ std::vector<std::string> remote_assistant_list(const Endpoint& endpoint) {
   return paths;
 }
 
+std::vector<RemoteTaskStatus> remote_assistant_tasks(const Endpoint& endpoint) {
+  if (!remote_assistant_available(endpoint))
+    throw std::runtime_error("remote assistant is unavailable");
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+       "--", endpoint.host, "rsync-assistant", "--control-tasks"});
+  if (result.exit_code != 0) throw std::runtime_error("remote task status request failed");
+  std::vector<RemoteTaskStatus> tasks;
+  std::size_t start = 0;
+  while (start < result.output.size()) {
+    const auto end = result.output.find('\n', start);
+    const auto line = result.output.substr(start, end - start);
+    const auto first = line.find('\t');
+    const auto second = first == std::string::npos ? first : line.find('\t', first + 1);
+    if (first != std::string::npos && second != std::string::npos)
+      tasks.push_back({line.substr(0, first), line.substr(first + 1, second - first - 1), line.substr(second + 1)});
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return tasks;
+}
+
 }  // namespace rsync_assistant

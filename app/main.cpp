@@ -149,6 +149,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto screen = ftxui::ScreenInteractive::Fullscreen();
   std::string status = "r: refresh  d: deployment guide  q: quit";
   std::string selected_log;
+  std::string remote_task_status = "R: inspect assistant-enabled remote task status";
   std::vector<rsync_assistant::TransferTask> tasks;
   int selected = 0;
   bool creating = false;
@@ -276,7 +277,9 @@ int run_tui(const std::filesystem::path& state_dir,
                      ftxui::text("p: pause/resume  x: stop  w: wait"),
                      ftxui::text("e: re-prepare interrupted/failed rsync task"),
                      ftxui::text("c: explicit scp fallback after rsync failure"),
-                     ftxui::text("n: new task  s: settings  d: daemon deployment guide"), ftxui::text("?: help")}) |
+                     ftxui::text("n: new task  s: settings  d: daemon deployment guide"),
+                     ftxui::text("R: remote assistant status"),
+                     ftxui::paragraph(remote_task_status), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
     if (delete_confirming) {
@@ -359,6 +362,21 @@ int run_tui(const std::filesystem::path& state_dir,
         write_network_rsyncd_template(path);
         status = "Deployment template written (not started): " + std::filesystem::absolute(path).string();
       } catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('R')) {
+      try {
+        const auto source_endpoint = rsync_assistant::parse_endpoint(tasks.at(selected).source);
+        const auto destination_endpoint = rsync_assistant::parse_endpoint(tasks.at(selected).destination);
+        const auto endpoint = source_endpoint.remote ? source_endpoint : destination_endpoint;
+        if (!endpoint.remote || endpoint.rsync_daemon)
+          throw std::runtime_error("selected task has no SSH assistant endpoint");
+        const auto remote_tasks = rsync_assistant::remote_assistant_tasks(endpoint);
+        remote_task_status = "Remote " + endpoint.host + ":";
+        if (remote_tasks.empty()) remote_task_status += " no tasks";
+        for (const auto& remote : remote_tasks)
+          remote_task_status += "\n" + remote.id + " " + remote.state + " via " + remote.method;
+      } catch (const std::exception& error) { remote_task_status = error.what(); }
       return true;
     }
     if (event == ftxui::Event::Character('n')) {
@@ -664,6 +682,28 @@ int main(int argc, char* argv[]) {
     if (std::filesystem::exists(settings_path)) settings = rsync_assistant::Settings::load(settings_path);
     if (has_argument("--control-ping")) {
       std::cout << "rsync-assistant-control-v1\n";
+      return 0;
+    }
+    if (has_argument("--control-tasks")) {
+      const auto tasks = rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
+      const auto state_name = [](rsync_assistant::TaskState state) {
+        if (state == rsync_assistant::TaskState::ready) return "ready";
+        if (state == rsync_assistant::TaskState::awaiting_execution_confirmation) return "awaiting_confirmation";
+        if (state == rsync_assistant::TaskState::running) return "running";
+        if (state == rsync_assistant::TaskState::paused) return "paused";
+        if (state == rsync_assistant::TaskState::completed) return "completed";
+        if (state == rsync_assistant::TaskState::cancelled) return "cancelled";
+        if (state == rsync_assistant::TaskState::interrupted) return "interrupted";
+        return "failed";
+      };
+      const auto method_name = [](rsync_assistant::TransferMethod method) {
+        if (method == rsync_assistant::TransferMethod::rsync_daemon) return "rsync_daemon";
+        if (method == rsync_assistant::TransferMethod::rsync_ssh) return "rsync_ssh";
+        if (method == rsync_assistant::TransferMethod::scp) return "scp";
+        return "local_rsync";
+      };
+      for (const auto& task : tasks)
+        std::cout << task.id << '\t' << state_name(task.state) << '\t' << method_name(task.method) << '\n';
       return 0;
     }
     if (const auto* path = option_value("--control-list")) {
