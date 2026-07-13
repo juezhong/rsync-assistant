@@ -36,6 +36,23 @@ std::string next_task_id() {
   return std::format("task-{}-{}", timestamp, ++counter);
 }
 
+std::string shell_quote(const std::string& argument) {
+  if (argument.find_first_of(" \t'\"\\$") == std::string::npos) return argument;
+  std::string quoted{"'"};
+  for (const char character : argument)
+    quoted += character == '\'' ? "'\\''" : std::string(1, character);
+  return quoted + "'";
+}
+
+std::string render_command(const std::vector<std::string>& arguments) {
+  std::string command;
+  for (const auto& argument : arguments) {
+    if (!command.empty()) command += ' ';
+    command += shell_quote(argument);
+  }
+  return command;
+}
+
 void persist_destination_log(const TransferTask& task) {
   const auto destination = parse_endpoint(task.destination);
   if (destination.remote) return;
@@ -195,7 +212,6 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
     throw std::runtime_error("remote rsync is unavailable; confirm system scp fallback explicitly");
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
-  if (it->dry_run) arguments.push_back("--dry-run");
   if (it->delete_extraneous) arguments.push_back("--delete");
   if (it->compression) arguments.push_back("--compress");
   if (!source_endpoint.remote) {
@@ -205,13 +221,12 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
     }
   }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
-  const auto result = it->dry_run ? ProcessRunner{}.run(arguments) :
+  const auto command = render_command(arguments);
+  auto preflight_arguments = arguments;
+  preflight_arguments.insert(preflight_arguments.begin() + 5, "--dry-run");
+  const auto result = it->dry_run ? ProcessRunner{}.run(preflight_arguments) :
                                   ProcessResult{0, "Dry-run disabled by task settings; command is ready for confirmation.\n"};
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
-  const auto command = rsync + " --recursive --links --times --partial" +
-                       std::string{it->dry_run ? " --dry-run" : ""} +
-                       std::string{it->delete_extraneous ? " --delete" : ""} +
-                       " -- " + it->source + " " + it->destination;
   Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
