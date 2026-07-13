@@ -74,8 +74,16 @@ printf '%s\n' "  source: $root"
 printf '%s\n' "  build directory: $build_dir"
 printf '%s\n' "  bundled rsync: $bundled"
 printf '%s\n' "  parallel compile jobs: $build_jobs (min(logical CPUs, 16))"
-printf '%s\n' "  step 1/2: configure CMake"
+printf '%s\n' "  step 1/3: configure CMake"
 cmake -S "$root" -B "$build_dir" \
   -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled"
-printf '%s\n' "  step 2/2: build targets"
+if [ "$bundled" = "ON" ]; then
+  # Keep rsync's configure output in its own phase.  Otherwise CMake may
+  # schedule it alongside FTXUI compilation and interleave both logs.
+  printf '%s\n' "  step 2/3: build bundled rsync"
+  cmake --build "$build_dir" --target private-rsync --parallel "$build_jobs"
+else
+  printf '%s\n' "  step 2/3: bundled rsync disabled (system rsync selected)"
+fi
+printf '%s\n' "  step 3/3: build rsync-assistant and FTXUI"
 cmake --build "$build_dir" --parallel "$build_jobs"
