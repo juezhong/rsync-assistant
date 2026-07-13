@@ -97,7 +97,8 @@ std::string encode_task(const TransferTask& task) {
                      task.state == TaskState::awaiting_execution_confirmation ? "awaiting_confirmation" :
                      task.state == TaskState::running ? "running" :
                      task.state == TaskState::paused ? "paused" :
-                     task.state == TaskState::completed ? "completed" : "failed";
+                     task.state == TaskState::completed ? "completed" :
+                     task.state == TaskState::cancelled ? "cancelled" : "failed";
   return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state + '\0' +
          (task.delete_extraneous ? "1" : "0");
 }
@@ -112,7 +113,7 @@ TransferTask decode_task(const std::string& payload) {
   const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed, "", "", payload.substr(fourth + 1) == "1"};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : TaskState::failed, "", "", payload.substr(fourth + 1) == "1"};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -141,7 +142,7 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      payload.substr(second + 1, third - second - 1),
                      state == "ready" ? TaskState::ready :
                      state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
-                     state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : TaskState::failed,
+                     state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : TaskState::failed,
                      "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1"});
     offset = fifth + 1;
   }
