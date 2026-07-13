@@ -422,11 +422,11 @@ int run_tui(const std::filesystem::path& state_dir,
         ftxui::vbox({ftxui::text("Details") | ftxui::bold,
                      ftxui::separator(), ftxui::text("Task actions") | ftxui::bold,
                      ftxui::text("Enter  preflight / execute"),
-                     ftxui::text("P      pause / resume"),
-                     ftxui::text("X      stop"),
-                     ftxui::text("W      wait for completion"),
-                     ftxui::text("E      re-prepare failed task"),
-                     ftxui::text("C      use scp after rsync failure"),
+                     ftxui::text("p      pause / resume"),
+                     ftxui::text("x      stop"),
+                     ftxui::text("w      wait for completion"),
+                     ftxui::text("e      re-prepare failed task"),
+                     ftxui::text("c      use scp after rsync failure"),
                      ftxui::separator(), ftxui::text("Navigation") | ftxui::bold,
                      ftxui::text("N      new task"),
                      ftxui::text("S      settings"),
@@ -440,9 +440,9 @@ int run_tui(const std::filesystem::path& state_dir,
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Keyboard shortcuts"),
                                         ftxui::vbox({ftxui::text("Dashboard" ) | ftxui::bold,
-                                                     ftxui::text("Enter preflight/execute   P pause/resume   X stop   W wait"),
-                                                     ftxui::text("E re-prepare   C scp fallback   N new task   S settings"),
-                                                     ftxui::text("D deployment guide   R remote task status   Q quit"),
+                                                     ftxui::text("Enter preflight/execute   p pause/resume   x stop   w wait"),
+                                                     ftxui::text("e re-prepare   c scp fallback   n new task   s settings"),
+                                                     ftxui::text("d deployment guide   R remote task status   q quit"),
                                                      ftxui::separator(),
                                                      ftxui::text("Path picker") | ftxui::bold,
                                                      ftxui::text("J/K or arrows move   H parent   L enter directory"),
@@ -533,7 +533,7 @@ int run_tui(const std::filesystem::path& state_dir,
                   ftxui::text(selected_source_paths.empty() ? "Selection: whole source" :
                               "Selection: " + std::to_string(selected_source_paths.size()) + " entries (" + (flatten_selection ? "flatten" : "preserve paths") + ")"),
                   ftxui::separator(), ftxui::text("Command proposal:"),
-                  ftxui::paragraph(draft_command_proposal(source, destination, delete_extraneous, compression, include_git_data,
+                  ftxui::paragraph(draft_command_proposal(copy_source_contents && selected_source_paths.empty() && !source.ends_with('/') ? source + "/" : source, destination, delete_extraneous, compression, include_git_data,
                                                           !selected_source_paths.empty(), flatten_selection, include_project_ignored)),
                   ftxui::separator(), ftxui::text("Enter: create Ready Task  F4: previous  Esc: cancel")};
     }
@@ -810,6 +810,7 @@ int run_tui(const std::filesystem::path& state_dir,
             }
           }
         } else {
+        if (!browse_entries.at(browse_selected).directory) { status = "Destination must be a directory"; return true; }
         const auto selected_path = (browse_remote ? browse_remote_prefix : "") + browse_entries.at(browse_selected).path.string();
         if (browse_destination) destination = selected_path;
         else source = selected_path;

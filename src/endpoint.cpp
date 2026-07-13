@@ -65,7 +65,7 @@ bool remote_assistant_available(const Endpoint& endpoint) {
 std::string remote_ssh_home(const std::string& host) {
   if (host.empty()) throw std::invalid_argument("SSH host is required");
   const auto result = ProcessRunner{}.run(
-      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", host, "pwd"});
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "ConnectTimeout=5", "--", host, "pwd"});
   if (result.exit_code != 0) throw std::runtime_error("SSH connection failed; authenticate with ssh " + host + " and retry");
   const auto end = result.output.find('\n');
   const auto home = result.output.substr(0, end);
@@ -82,7 +82,7 @@ std::vector<std::string> remote_ssh_list(const Endpoint& endpoint) {
   const auto command = "find " + remote_shell_quote(endpoint.path) +
                        " -mindepth 1 -maxdepth 1 -exec sh -c 'for p do if [ -d \"$p\" ]; then printf \"%s/\\n\" \"$p\"; else printf \"%s\\n\" \"$p\"; fi; done' sh {} +";
   const auto result = ProcessRunner{}.run(
-      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", endpoint.host, command});
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "ConnectTimeout=5", "--", endpoint.host, command});
   if (result.exit_code != 0)
     throw std::runtime_error("remote directory listing failed; verify SSH authentication and path access");
   std::vector<std::string> paths;
