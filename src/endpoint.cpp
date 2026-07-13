@@ -39,4 +39,12 @@ bool remote_rsync_available(const Endpoint& endpoint) {
   return result.exit_code == 0;
 }
 
+bool remote_assistant_available(const Endpoint& endpoint) {
+  if (!endpoint.remote || endpoint.rsync_daemon) return false;
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+       "--", endpoint.host, "rsync-assistant", "--control-ping"});
+  return result.exit_code == 0 && result.output.find("rsync-assistant-control-v1") != std::string::npos;
+}
+
 }  // namespace rsync_assistant

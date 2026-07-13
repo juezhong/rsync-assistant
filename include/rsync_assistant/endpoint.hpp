@@ -13,5 +13,6 @@ struct Endpoint {
 
 [[nodiscard]] Endpoint parse_endpoint(const std::string& value);
 [[nodiscard]] bool remote_rsync_available(const Endpoint& endpoint);
+[[nodiscard]] bool remote_assistant_available(const Endpoint& endpoint);
 
 }  // namespace rsync_assistant
