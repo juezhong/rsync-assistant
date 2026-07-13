@@ -19,6 +19,7 @@ struct Settings {
   std::string api_key;
 
   static Settings load(const std::filesystem::path& path);
+  void validate() const;
   void save(const std::filesystem::path& path) const;
 };
 

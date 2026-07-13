@@ -75,10 +75,19 @@ Settings Settings::load(const std::filesystem::path& path) {
     settings.ai_enabled = false;
     settings.api_key.clear();
   }
+  settings.validate();
   return settings;
 }
 
+void Settings::validate() const {
+  if (benchmark_size_mib == 0 || benchmark_timeout_seconds == 0 || benchmark_cache_hours == 0)
+    throw std::runtime_error("benchmark size, timeout, and cache duration must be positive");
+  if (daemon_advantage_threshold < 1.0 || daemon_advantage_threshold > 10.0)
+    throw std::runtime_error("daemon_advantage_threshold must be between 1.0 and 10.0");
+}
+
 void Settings::save(const std::filesystem::path& path) const {
+  validate();
   if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
   std::ofstream output{path, std::ios::trunc};
   if (!output) throw std::runtime_error("cannot write settings");

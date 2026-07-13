@@ -458,10 +458,6 @@ int run_tui(const std::filesystem::path& state_dir,
         settings.benchmark_timeout_seconds = static_cast<unsigned>(std::stoul(settings_benchmark_timeout));
         settings.benchmark_cache_hours = static_cast<unsigned>(std::stoul(settings_benchmark_cache));
         settings.daemon_advantage_threshold = std::stod(settings_benchmark_threshold);
-        if (settings.benchmark_size_mib == 0 || settings.benchmark_timeout_seconds == 0 ||
-            settings.benchmark_cache_hours == 0 || settings.daemon_advantage_threshold < 1.0 ||
-            settings.daemon_advantage_threshold > 10.0)
-          throw std::runtime_error("benchmark settings must be positive; advantage ratio is 1.0 to 10.0");
         settings.save(settings_path); status = "Settings saved: " + settings_path.string();
       }
       catch (const std::exception& error) { status = error.what(); }
