@@ -4,6 +4,13 @@
 #include "rsync_assistant/rsync_locator.hpp"
 
 #include <stdexcept>
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <glob.h>
+#include <set>
+#include <sstream>
 
 namespace rsync_assistant {
 namespace {
@@ -53,6 +60,89 @@ bool remote_assistant_available(const Endpoint& endpoint) {
       {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
        "--", endpoint.host, "rsync-assistant", "--control-ping"});
   return result.exit_code == 0 && result.output.find("rsync-assistant-control-v1") != std::string::npos;
+}
+
+std::string remote_ssh_home(const std::string& host) {
+  if (host.empty()) throw std::invalid_argument("SSH host is required");
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", host, "pwd"});
+  if (result.exit_code != 0) throw std::runtime_error("SSH connection failed; authenticate with ssh " + host + " and retry");
+  const auto end = result.output.find('\n');
+  const auto home = result.output.substr(0, end);
+  if (home.empty() || home.front() != '/') throw std::runtime_error("SSH host did not report an absolute home directory");
+  return home;
+}
+
+std::vector<std::string> remote_ssh_list(const Endpoint& endpoint) {
+  if (!endpoint.remote || endpoint.rsync_daemon)
+    throw std::invalid_argument("SSH directory listing requires an SSH endpoint");
+  // rsync over SSH already requires a remote POSIX shell.  The path is quoted
+  // before becoming part of that shell command; paths with newlines are not
+  // supported by the line-oriented picker protocol.
+  const auto command = "find " + remote_shell_quote(endpoint.path) +
+                       " -mindepth 1 -maxdepth 1 -exec sh -c 'for p do if [ -d \"$p\" ]; then printf \"%s/\\n\" \"$p\"; else printf \"%s\\n\" \"$p\"; fi; done' sh {} +";
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", endpoint.host, command});
+  if (result.exit_code != 0)
+    throw std::runtime_error("remote directory listing failed; verify SSH authentication and path access");
+  std::vector<std::string> paths;
+  std::size_t start = 0;
+  while (start < result.output.size()) {
+    const auto end = result.output.find('\n', start);
+    const auto path = result.output.substr(start, end - start);
+    if (!path.empty()) paths.push_back(path);
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return paths;
+}
+
+std::vector<std::string> ssh_config_hosts() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || *home == '\0') return {};
+  return ssh_config_hosts(std::filesystem::path{home} / ".ssh" / "config");
+}
+
+std::vector<std::string> ssh_config_hosts(const std::filesystem::path& config_path) {
+  std::set<std::string> hosts;
+  std::set<std::filesystem::path> visited;
+  const auto read_config = [&](const auto& self, const std::filesystem::path& path) -> void {
+    if (!visited.insert(path.lexically_normal()).second) return;
+    std::ifstream config{path};
+    std::string line;
+    while (std::getline(config, line)) {
+      const auto comment = line.find('#');
+      if (comment != std::string::npos) line.erase(comment);
+      std::istringstream fields{line};
+      std::string key;
+      fields >> key;
+      if (key == "Host" || key == "host") {
+        std::string host;
+        while (fields >> host)
+          if (host.find_first_of("*!?") == std::string::npos) hosts.insert(host);
+      } else if (key == "Include" || key == "include") {
+        std::string include;
+        while (fields >> include) {
+          const auto pattern = include.starts_with('/') ? include : (path.parent_path() / include).string();
+          glob_t matches{};
+          if (glob(pattern.c_str(), 0, nullptr, &matches) == 0)
+            for (std::size_t i = 0; i < matches.gl_pathc; ++i) self(self, matches.gl_pathv[i]);
+          globfree(&matches);
+        }
+      }
+    }
+  };
+  read_config(read_config, config_path);
+  return {hosts.begin(), hosts.end()};
+}
+
+void remove_known_host(const std::string& host) {
+  if (host.empty()) throw std::invalid_argument("SSH host is required");
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || *home == '\0') throw std::runtime_error("HOME is not set");
+  const auto result = ProcessRunner{}.run({"ssh-keygen", "-R", host,
+                                            "-f", (std::filesystem::path{home} / ".ssh" / "known_hosts").string()});
+  if (result.exit_code != 0) throw std::runtime_error("could not remove known-host entry");
 }
 
 std::vector<std::string> remote_assistant_list(const Endpoint& endpoint) {
