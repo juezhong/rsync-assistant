@@ -1,9 +1,11 @@
 #include "rsync_assistant/process_runner.hpp"
 
 #include <array>
+#include <chrono>
 #include <stdexcept>
 #include <signal.h>
 #include <utility>
+#include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -16,6 +18,7 @@ ManagedProcess ProcessRunner::start(const std::vector<std::string>& arguments) c
   const pid_t child = fork();
   if (child < 0) throw std::runtime_error("fork failed");
   if (child == 0) {
+    setpgid(0, 0);
     dup2(output_pipe[1], STDOUT_FILENO);
     dup2(output_pipe[1], STDERR_FILENO);
     close(output_pipe[0]);
@@ -35,6 +38,18 @@ ProcessResult ProcessRunner::run(const std::vector<std::string>& arguments) cons
   return start(arguments).wait();
 }
 
+ProcessResult ProcessRunner::run_for(const std::vector<std::string>& arguments,
+                                     std::chrono::milliseconds timeout) const {
+  auto process = start(arguments);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (const auto result = process.try_wait()) return *result;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  process.stop();
+  return {124, "process timed out\n"};
+}
+
 ManagedProcess::ManagedProcess(int pid, int output_descriptor)
     : pid_(pid), output_descriptor_(output_descriptor) {}
 
@@ -46,12 +61,12 @@ ManagedProcess& ManagedProcess::operator=(ManagedProcess&& other) noexcept {
   return *this;
 }
 bool ManagedProcess::active() const { return pid_ > 0; }
-void ManagedProcess::pause() { if (active()) kill(pid_, SIGSTOP); }
-void ManagedProcess::resume() { if (active()) kill(pid_, SIGCONT); }
+void ManagedProcess::pause() { if (active()) kill(-pid_, SIGSTOP); }
+void ManagedProcess::resume() { if (active()) kill(-pid_, SIGCONT); }
 void ManagedProcess::stop() {
   if (active()) {
-    kill(pid_, SIGCONT);
-    kill(pid_, SIGTERM);
+    kill(-pid_, SIGCONT);
+    kill(-pid_, SIGTERM);
     (void)wait();
   }
 }

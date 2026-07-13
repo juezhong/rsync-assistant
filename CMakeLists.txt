@@ -67,6 +67,7 @@ add_library(rsync_assistant_core
   src/directory_scanner.cpp
   src/selection_manifest.cpp
   src/benchmark_cache.cpp
+  src/endpoint_benchmark.cpp
   src/settings.cpp
   src/task_control_socket.cpp
   src/task_control_service.cpp
@@ -99,7 +100,7 @@ target_compile_definitions(rsync_assistant_core PUBLIC
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   enable_testing()
-  foreach(test_name IN ITEMS task_control_service task_control_socket process_runner settings project_profile endpoint directory_scanner transport_selector benchmark_cache)
+  foreach(test_name IN ITEMS task_control_service task_control_socket process_runner settings project_profile endpoint directory_scanner transport_selector benchmark_cache endpoint_benchmark)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/${test_name}_test.cpp")
       add_executable(${test_name}_test "tests/${test_name}_test.cpp")
       target_link_libraries(${test_name}_test PRIVATE rsync_assistant_core)

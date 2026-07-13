@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <optional>
+#include <chrono>
 #include <vector>
 
 namespace rsync_assistant {
@@ -17,6 +18,8 @@ class ManagedProcess;
 class ProcessRunner {
  public:
   [[nodiscard]] ProcessResult run(const std::vector<std::string>& arguments) const;
+  [[nodiscard]] ProcessResult run_for(const std::vector<std::string>& arguments,
+                                      std::chrono::milliseconds timeout) const;
   [[nodiscard]] ManagedProcess start(const std::vector<std::string>& arguments) const;
 };
 
