@@ -115,7 +115,11 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
   auto settings_compression = ftxui::Checkbox("Default compression", &settings.compression);
   auto settings_benchmark = ftxui::Checkbox("Enable benchmarks", &settings.benchmark_enabled);
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input});
+  auto settings_ai_enabled = ftxui::Checkbox("Enable AI explanations", &settings.ai_enabled);
+  auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
+  auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
+  auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -181,7 +185,9 @@ int run_tui(const std::filesystem::path& state_dir,
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Settings"),
                                         ftxui::vbox({settings_dry_run->Render(), settings_compression->Render(),
-                                                     settings_benchmark->Render(), ftxui::separator(),
+                                                     settings_benchmark->Render(), settings_ai_enabled->Render(),
+                                                     settings_ai_endpoint->Render(), settings_ai_model->Render(),
+                                                     settings_api_key->Render(), ftxui::separator(),
                                                      ftxui::text("Ctrl-S: save  Esc: close"),
                                                      ftxui::text(settings_path.string())})) | ftxui::center});
     }
