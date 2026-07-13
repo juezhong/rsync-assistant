@@ -31,6 +31,7 @@ constexpr std::uint32_t kAwaitCompletion = 10;
 constexpr std::uint32_t kExecutionLog = 11;
 constexpr std::uint32_t kExecutionLogResponse = 12;
 constexpr std::uint32_t kScpFallback = 13;
+constexpr std::uint32_t kErrorResponse = 14;
 constexpr std::size_t kMaximumPayloadBytes = 1024 * 1024;
 
 struct FrameHeader {
@@ -176,6 +177,13 @@ int connect_to(const std::filesystem::path& socket_path) {
   throw std::runtime_error("connect to task daemon failed");
 }
 
+void require_response(std::uint32_t actual, std::uint32_t expected,
+                      const std::string& payload, std::string_view operation) {
+  if (actual == kErrorResponse) throw std::runtime_error(payload);
+  if (actual != expected)
+    throw std::runtime_error(std::string{"unexpected "} + std::string{operation} + " response");
+}
+
 }  // namespace
 
 struct TaskControlSocketServer::Impl {
@@ -235,7 +243,8 @@ void TaskControlSocketServer::serve() {
       } else {
         throw std::runtime_error("unsupported request");
       }
-    } catch (...) {
+    } catch (const std::exception& error) {
+      send_frame(client, kErrorResponse, error.what());
     }
     close(client);
   }
@@ -248,7 +257,7 @@ TransferTask TaskControlSocketClient::preflight(const std::string& task_id) cons
   send_frame(descriptor, kPreflight, task_id);
   const auto [type, payload] = receive_frame(descriptor);
   close(descriptor);
-  if (type != kTaskResponse) throw std::runtime_error("unexpected preflight response");
+  require_response(type, kTaskResponse, payload, "preflight");
   return decode_task(payload);
 }
 
@@ -259,7 +268,7 @@ TransferTask TaskControlSocketClient::execute(const std::string& task_id,
                task_id + '\0' + (delete_confirmed ? "DELETE" : ""));
   const auto [type, payload] = receive_frame(descriptor);
   close(descriptor);
-  if (type != kTaskResponse) throw std::runtime_error("unexpected execute response");
+  require_response(type, kTaskResponse, payload, "execute");
   return decode_task(payload);
 }
 
@@ -290,7 +299,7 @@ TransferTask TaskControlSocketClient::create_ready_task(
                    (request.compression ? "1" : "0"));
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
-    if (type != kTaskResponse) throw std::runtime_error("unexpected task response");
+    require_response(type, kTaskResponse, payload, "task");
     return decode_task(payload);
   } catch (...) {
     close(descriptor);
@@ -305,7 +314,7 @@ TransferTask request_task(const std::filesystem::path& socket_path, std::uint32_
   send_frame(descriptor, type, task_id);
   const auto [response_type, payload] = receive_frame(descriptor);
   close(descriptor);
-  if (response_type != kTaskResponse) throw std::runtime_error("unexpected task response");
+  require_response(response_type, kTaskResponse, payload, "task");
   return decode_task(payload);
 }
 }  // namespace
@@ -329,7 +338,7 @@ std::vector<TransferTask> TaskControlSocketClient::list_tasks() const {
     send_frame(descriptor, kListTasks, "");
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
-    if (type != kTaskListResponse) throw std::runtime_error("unexpected task list response");
+    require_response(type, kTaskListResponse, payload, "task list");
     return decode_tasks(payload);
   } catch (...) {
     close(descriptor);
@@ -342,7 +351,7 @@ std::string TaskControlSocketClient::execution_log(const std::string& task_id) c
   send_frame(descriptor, kExecutionLog, task_id);
   const auto [type, payload] = receive_frame(descriptor);
   close(descriptor);
-  if (type != kExecutionLogResponse) throw std::runtime_error("unexpected execution log response");
+  require_response(type, kExecutionLogResponse, payload, "execution log");
   return payload;
 }
 
