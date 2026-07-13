@@ -204,14 +204,19 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
 
 std::string TaskControlService::execution_log(const std::string& task_id) const {
   Statement statement{impl_->database,
-                      "SELECT output FROM transfer_tasks WHERE id = ?"};
+                      "SELECT command, output FROM transfer_tasks WHERE id = ?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
   if (sqlite3_step(statement.get()) != SQLITE_ROW)
     throw std::runtime_error("unknown task");
-  const auto* output = sqlite3_column_text(statement.get(), 0);
-  return output == nullptr ? "" : reinterpret_cast<const char*>(output);
+  const auto* command = sqlite3_column_text(statement.get(), 0);
+  const auto* output = sqlite3_column_text(statement.get(), 1);
+  const std::string command_text = command == nullptr ? "" : reinterpret_cast<const char*>(command);
+  const std::string output_text = output == nullptr ? "" : reinterpret_cast<const char*>(output);
+  if (command_text.empty()) return output_text;
+  return "Command proposal (reviewed locally):\n" + command_text +
+         "\n\nExecution / preflight output:\n" + output_text;
 }
 
 TransferTask TaskControlService::preflight(const std::string& task_id) {
