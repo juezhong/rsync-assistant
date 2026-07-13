@@ -262,6 +262,12 @@ int main(int argc, char* argv[]) {
       std::cout << "rsync-assistant-control-v1\n";
       return 0;
     }
+    if (argc == 3 && std::string_view{argv[1]} == "--control-list") {
+      for (const auto& entry : std::filesystem::directory_iterator(
+               argv[2], std::filesystem::directory_options::skip_permission_denied))
+        std::cout << entry.path().string() << '\n';
+      return 0;
+    }
     if (argc == 3 && std::string_view{argv[1]} == "--write-default-config") {
       const auto path = std::filesystem::absolute(argv[2]);
       std::filesystem::create_directories(path.parent_path());

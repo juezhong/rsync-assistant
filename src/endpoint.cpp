@@ -47,4 +47,25 @@ bool remote_assistant_available(const Endpoint& endpoint) {
   return result.exit_code == 0 && result.output.find("rsync-assistant-control-v1") != std::string::npos;
 }
 
+std::vector<std::string> remote_assistant_list(const Endpoint& endpoint) {
+  if (!remote_assistant_available(endpoint))
+    throw std::runtime_error("remote assistant is unavailable");
+  if (endpoint.path.find('\'') != std::string::npos)
+    throw std::invalid_argument("remote path containing quote is unsupported");
+  const auto command = "rsync-assistant --control-list '" + endpoint.path + "'";
+  const auto result = ProcessRunner{}.run(
+      {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "--", endpoint.host, command});
+  if (result.exit_code != 0) throw std::runtime_error("remote directory listing failed");
+  std::vector<std::string> paths;
+  std::size_t start = 0;
+  while (start < result.output.size()) {
+    const auto end = result.output.find('\n', start);
+    const auto path = result.output.substr(start, end - start);
+    if (!path.empty()) paths.push_back(path);
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return paths;
+}
+
 }  // namespace rsync_assistant
