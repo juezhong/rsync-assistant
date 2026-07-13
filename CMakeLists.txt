@@ -61,6 +61,7 @@ add_library(rsync_assistant_core
   src/settings.cpp
   src/task_control_socket.cpp
   src/task_control_service.cpp
+  src/transport_selector.cpp
 )
 
 target_include_directories(rsync_assistant_core PUBLIC include)
