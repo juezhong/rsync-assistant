@@ -20,6 +20,7 @@ struct CreateReadyTask {
   // Paths are relative to source.  An empty list transfers the whole source.
   std::vector<std::string> selected_relative_paths;
   bool flatten_selection = false;
+  bool include_git_data = false;
 };
 
 struct TransferTask {

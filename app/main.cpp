@@ -1,6 +1,9 @@
 #include "rsync_assistant/task_control_socket.hpp"
 #include "rsync_assistant/directory_scanner.hpp"
 #include "rsync_assistant/endpoint.hpp"
+#include "rsync_assistant/process_runner.hpp"
+#include "rsync_assistant/project_profile.hpp"
+#include "rsync_assistant/rsync_locator.hpp"
 #include "rsync_assistant/settings.hpp"
 
 #include <ftxui/component/component.hpp>
@@ -17,6 +20,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_set>
+#include <functional>
 #include <signal.h>
 #include <unistd.h>
 
@@ -66,8 +70,53 @@ std::filesystem::path state_directory(int argc, char* argv[]) {
   return std::filesystem::temp_directory_path() / "rsync-assistant";
 }
 
+void write_network_rsyncd_template(const std::filesystem::path& path) {
+  if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+  std::ofstream output{path, std::ios::trunc};
+  output << "# Review binding, authentication and firewall rules before starting rsync daemon.\n"
+         << "# Do not expose this daemon on untrusted networks.\n"
+         << "use chroot = no\n"
+         << "read only = false\n"
+         << "auth users = REPLACE_ME\n"
+         << "secrets file = REPLACE_WITH_OWNER_ONLY_SECRETS_FILE\n"
+         << "hosts allow = REPLACE_WITH_TRUSTED_SUBNET\n\n"
+         << "[transfer]\n"
+         << "path = REPLACE_WITH_TRANSFER_ROOT\n"
+         << "comment = rsync-assistant managed transfer root\n";
+  if (!output) throw std::runtime_error("cannot write rsync daemon configuration");
+}
+
 int run_daemon(const std::filesystem::path& state_dir) {
   std::filesystem::create_directories(state_dir);
+  const auto daemon_root = state_dir / "managed-rsync-root";
+  const auto daemon_config = state_dir / "managed-rsyncd.conf";
+  std::filesystem::create_directories(daemon_root);
+  const auto port = 20000 + static_cast<unsigned>(std::hash<std::string>{}(state_dir.string()) % 20000);
+  {
+    std::ofstream output{daemon_config, std::ios::trunc};
+    if (!output) throw std::runtime_error("cannot write managed loopback rsync daemon configuration");
+    output << "address = 127.0.0.1\n"
+           << "port = " << port << "\n"
+           << "use chroot = no\n"
+           << "read only = false\n\n"
+           << "[rsync-assistant-loopback]\n"
+           << "path = " << daemon_root.string() << "\n"
+           << "comment = assistant lifecycle-bound loopback-only module\n";
+  }
+  std::filesystem::permissions(daemon_config,
+                               std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                               std::filesystem::perm_options::replace);
+  rsync_assistant::ManagedProcess loopback_rsync;
+  try {
+    loopback_rsync = rsync_assistant::ProcessRunner{}.start({
+        rsync_assistant::RsyncLocator{}.executable().string(), "--daemon", "--no-detach",
+        "--config=" + daemon_config.string(), "--address=127.0.0.1", "--port=" + std::to_string(port)});
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (const auto result = loopback_rsync.try_wait())
+      std::cerr << "rsync-assistant: managed loopback rsync daemon unavailable: " << result->output;
+  } catch (const std::exception& error) {
+    std::cerr << "rsync-assistant: managed loopback rsync daemon unavailable: " << error.what() << '\n';
+  }
   rsync_assistant::TaskControlService service{state_dir / "tasks.sqlite3"};
   rsync_assistant::TaskControlSocketServer server{service, state_dir / "control.sock"};
   server.serve();
@@ -80,7 +129,7 @@ int run_tui(const std::filesystem::path& state_dir,
   TuiSessionLock session_lock{state_dir};
   rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
   auto screen = ftxui::ScreenInteractive::Fullscreen();
-  std::string status = "r: refresh  q: quit";
+  std::string status = "r: refresh  d: deployment guide  q: quit";
   std::string selected_log;
   std::vector<rsync_assistant::TransferTask> tasks;
   int selected = 0;
@@ -94,6 +143,8 @@ int run_tui(const std::filesystem::path& state_dir,
   bool compression = settings.compression;
   bool dry_run = settings.dry_run;
   bool trusted_daemon = false;
+  bool source_has_git_repository = false;
+  bool include_git_data = false;
   bool delete_confirming = false;
   std::string delete_confirmation;
   bool scp_confirming = false;
@@ -117,6 +168,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
+  auto include_git_checkbox = ftxui::Checkbox("Include repository data (.git)", &include_git_data);
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
@@ -126,7 +178,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -182,7 +234,7 @@ int run_tui(const std::filesystem::path& state_dir,
                      ftxui::text("p: pause/resume  x: stop  w: wait"),
                      ftxui::text("e: re-prepare interrupted/failed rsync task"),
                      ftxui::text("c: explicit scp fallback after rsync failure"),
-                     ftxui::text("n: new task  s: settings"), ftxui::text("?: help")}) |
+                     ftxui::text("n: new task  s: settings  d: daemon deployment guide"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
     if (delete_confirming) {
@@ -232,7 +284,8 @@ int run_tui(const std::filesystem::path& state_dir,
                   ftxui::text("Enter: next  Esc: cancel")};
     } else if (wizard_step == 1) {
       contents = {ftxui::text("Step 2/3: transfer options"), dry_run_checkbox->Render(),
-                  compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(), ftxui::separator(),
+                  compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(),
+                  source_has_git_repository ? include_git_checkbox->Render() : ftxui::text("No .git repository detected at source root"), ftxui::separator(),
                   ftxui::text("Enter: review  F4: previous  Esc: cancel")};
     } else {
       contents = {ftxui::text("Step 3/3: review"),
@@ -255,6 +308,14 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (event == ftxui::Event::Character('r')) {
       refresh();
+      return true;
+    }
+    if (!creating && event == ftxui::Event::Character('d')) {
+      try {
+        const auto path = state_dir / "rsyncd-deployment.conf";
+        write_network_rsyncd_template(path);
+        status = "Deployment template written (not started): " + std::filesystem::absolute(path).string();
+      } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
     if (event == ftxui::Event::Character('n')) {
@@ -434,6 +495,10 @@ int run_tui(const std::filesystem::path& state_dir,
           if (wizard_step == 0) {
             if (source.empty() || destination.empty())
               throw std::runtime_error("source and destination are required before continuing");
+            const auto source_endpoint = rsync_assistant::parse_endpoint(source);
+            source_has_git_repository = !source_endpoint.remote &&
+                rsync_assistant::detect_project_profile(source_endpoint.path).has_git_repository;
+            include_git_data = false;
             ++wizard_step;
             return true;
           }
@@ -441,13 +506,15 @@ int run_tui(const std::filesystem::path& state_dir,
             ++wizard_step;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection, include_git_data});
           source.clear();
           destination.clear();
           delete_extraneous = false;
           compression = settings.compression;
           dry_run = settings.dry_run;
           trusted_daemon = false;
+          source_has_git_repository = false;
+          include_git_data = false;
           selected_source_paths.clear();
           flatten_selection = false;
           creating = false;
@@ -575,19 +642,7 @@ int main(int argc, char* argv[]) {
     }
     if (const auto* requested_path = option_value("--write-rsyncd-config")) {
       const auto path = std::filesystem::absolute(requested_path);
-      std::filesystem::create_directories(path.parent_path());
-      std::ofstream output{path};
-      output << "# Review binding, authentication and firewall rules before starting rsync daemon.\n"
-             << "# Do not expose this daemon on untrusted networks.\n"
-             << "use chroot = no\n"
-             << "read only = false\n"
-             << "auth users = REPLACE_ME\n"
-             << "secrets file = REPLACE_WITH_OWNER_ONLY_SECRETS_FILE\n"
-             << "hosts allow = REPLACE_WITH_TRUSTED_SUBNET\n\n"
-             << "[transfer]\n"
-             << "path = REPLACE_WITH_TRANSFER_ROOT\n"
-             << "comment = rsync-assistant managed transfer root\n";
-      if (!output) throw std::runtime_error("cannot write rsync daemon configuration");
+      write_network_rsyncd_template(path);
       std::cout << path << '\n';
       return 0;
     }
