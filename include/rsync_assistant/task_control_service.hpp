@@ -22,6 +22,7 @@ struct CreateReadyTask {
   std::vector<std::string> selected_relative_paths;
   bool flatten_selection = false;
   bool include_git_data = false;
+  bool include_project_ignored = false;
 };
 
 struct TransferTask {

@@ -158,6 +158,9 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN exit_code INTEGER",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN include_project_ignored INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
                               "WHERE state IN ('running', 'paused')",
@@ -213,10 +216,11 @@ TransferTask TaskControlService::create_ready_task(
   if (request.compression) proposal.push_back("--compress");
   if (!source_endpoint.remote) {
     const auto profile = detect_project_profile(source_endpoint.path);
-    for (const auto& exclusion : profile.exclusions) {
-      proposal.push_back("--exclude");
-      proposal.push_back(exclusion);
-    }
+    if (!request.include_project_ignored)
+      for (const auto& exclusion : profile.exclusions) {
+        proposal.push_back("--exclude");
+        proposal.push_back(exclusion);
+      }
     if (profile.has_git_repository && !request.include_git_data) {
       proposal.push_back("--exclude");
       proposal.push_back(".git/");
@@ -230,8 +234,8 @@ TransferTask TaskControlService::create_ready_task(
   proposal.insert(proposal.end(), {"--", request.source, request.destination});
   const auto command = render_command(proposal);
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection, include_git_data) "
-                      "VALUES (?, ?, ?, 'ready', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection, include_git_data, include_project_ignored) "
+                      "VALUES (?, ?, ?, 'ready', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -258,6 +262,7 @@ TransferTask TaskControlService::create_ready_task(
   check_sqlite(sqlite3_bind_int(statement.get(), 11, static_cast<int>(request.selected_relative_paths.size())), impl_->database, "bind selection count");
   check_sqlite(sqlite3_bind_int(statement.get(), 12, request.flatten_selection), impl_->database, "bind flatten selection");
   check_sqlite(sqlite3_bind_int(statement.get(), 13, request.include_git_data), impl_->database, "bind git inclusion");
+  check_sqlite(sqlite3_bind_int(statement.get(), 14, request.include_project_ignored), impl_->database, "bind project ignored inclusion");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
   return {id, request.source, request.destination, TaskState::ready, command, "", request.delete_extraneous, request.compression, request.dry_run, task_method, request.selected_relative_paths.size(), request.flatten_selection};
 }
@@ -364,14 +369,18 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   if (it->compression) arguments.push_back("--compress");
   if (!source_endpoint.remote) {
     const auto profile = detect_project_profile(source_endpoint.path);
-    for (const auto& exclusion : profile.exclusions) {
-      arguments.push_back("--exclude");
-      arguments.push_back(exclusion);
-    }
+    Statement project_setting{impl_->database, "SELECT include_git_data, include_project_ignored FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(project_setting.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    const auto has_setting = sqlite3_step(project_setting.get()) == SQLITE_ROW;
+    const auto include_git = has_setting && sqlite3_column_int(project_setting.get(), 0) != 0;
+    const auto include_ignored = has_setting && sqlite3_column_int(project_setting.get(), 1) != 0;
+    if (!include_ignored)
+      for (const auto& exclusion : profile.exclusions) {
+        arguments.push_back("--exclude");
+        arguments.push_back(exclusion);
+      }
     if (profile.has_git_repository) {
-      Statement git_setting{impl_->database, "SELECT include_git_data FROM transfer_tasks WHERE id=?"};
-      check_sqlite(sqlite3_bind_text(git_setting.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
-      if (sqlite3_step(git_setting.get()) == SQLITE_ROW && sqlite3_column_int(git_setting.get(), 0) == 0) {
+      if (!include_git) {
         arguments.push_back("--exclude");
         arguments.push_back(".git/");
       }
@@ -421,14 +430,18 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   const auto local_source = parse_endpoint(it->source);
   if (!local_source.remote) {
     const auto profile = detect_project_profile(local_source.path);
-    for (const auto& exclusion : profile.exclusions) {
-      arguments.push_back("--exclude");
-      arguments.push_back(exclusion);
-    }
+    Statement project_setting{impl_->database, "SELECT include_git_data, include_project_ignored FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(project_setting.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    const auto has_setting = sqlite3_step(project_setting.get()) == SQLITE_ROW;
+    const auto include_git = has_setting && sqlite3_column_int(project_setting.get(), 0) != 0;
+    const auto include_ignored = has_setting && sqlite3_column_int(project_setting.get(), 1) != 0;
+    if (!include_ignored)
+      for (const auto& exclusion : profile.exclusions) {
+        arguments.push_back("--exclude");
+        arguments.push_back(exclusion);
+      }
     if (profile.has_git_repository) {
-      Statement git_setting{impl_->database, "SELECT include_git_data FROM transfer_tasks WHERE id=?"};
-      check_sqlite(sqlite3_bind_text(git_setting.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
-      if (sqlite3_step(git_setting.get()) == SQLITE_ROW && sqlite3_column_int(git_setting.get(), 0) == 0) {
+      if (!include_git) {
         arguments.push_back("--exclude");
         arguments.push_back(".git/");
       }

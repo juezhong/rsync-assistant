@@ -129,7 +129,7 @@ std::string quote_preview(const std::string& value) {
 std::string draft_command_proposal(const std::string& source, const std::string& destination,
                                    bool delete_extraneous, bool compression,
                                    bool include_git_data, bool has_selection,
-                                   bool flatten_selection) {
+                                   bool flatten_selection, bool include_project_ignored) {
   if (source.empty() || destination.empty()) return "Complete source and destination to generate a command proposal.";
   std::vector<std::string> arguments{rsync_assistant::RsyncLocator{}.executable().string(),
                                      "--recursive", "--links", "--times", "--partial"};
@@ -138,10 +138,11 @@ std::string draft_command_proposal(const std::string& source, const std::string&
   const auto endpoint = rsync_assistant::parse_endpoint(source);
   if (!endpoint.remote) {
     const auto profile = rsync_assistant::detect_project_profile(endpoint.path);
-    for (const auto& exclusion : profile.exclusions) {
-      arguments.push_back("--exclude");
-      arguments.push_back(exclusion);
-    }
+    if (!include_project_ignored)
+      for (const auto& exclusion : profile.exclusions) {
+        arguments.push_back("--exclude");
+        arguments.push_back(exclusion);
+      }
     if (profile.has_git_repository && !include_git_data) {
       arguments.push_back("--exclude");
       arguments.push_back(".git/");
@@ -234,6 +235,8 @@ int run_tui(const std::filesystem::path& state_dir,
   bool trusted_daemon = false;
   bool source_has_git_repository = false;
   bool include_git_data = false;
+  bool source_has_project_ignores = false;
+  bool include_project_ignored = false;
   bool delete_confirming = false;
   std::string delete_confirmation;
   bool scp_confirming = false;
@@ -264,6 +267,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
   auto include_git_checkbox = ftxui::Checkbox("Include repository data (.git)", &include_git_data);
+  auto include_project_ignored_checkbox = ftxui::Checkbox("Include detected build/dependency paths", &include_project_ignored);
   auto browse_search_input = ftxui::Input(&browse_query, "Search paths");
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
@@ -282,7 +286,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto form = ftxui::Container::Vertical({source_input, destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, include_project_ignored_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
   auto scan_browser = [&] {
     if (browse_scanning) return;
     const auto directory = browse_directory;
@@ -441,7 +445,8 @@ int run_tui(const std::filesystem::path& state_dir,
     } else if (wizard_step == 1) {
       contents = {ftxui::text("Step 2/3: transfer options"), dry_run_checkbox->Render(),
                   compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(),
-                  source_has_git_repository ? include_git_checkbox->Render() : ftxui::text("No .git repository detected at source root"), ftxui::separator(),
+                  source_has_git_repository ? include_git_checkbox->Render() : ftxui::text("No .git repository detected at source root"),
+                  source_has_project_ignores ? include_project_ignored_checkbox->Render() : ftxui::text("No detected project build/dependency paths"), ftxui::separator(),
                   ftxui::text("Enter: review  F4: previous  Esc: cancel")};
     } else {
       contents = {ftxui::text("Step 3/3: review"),
@@ -453,7 +458,7 @@ int run_tui(const std::filesystem::path& state_dir,
                               "Selection: " + std::to_string(selected_source_paths.size()) + " entries (" + (flatten_selection ? "flatten" : "preserve paths") + ")"),
                   ftxui::separator(), ftxui::text("Command proposal:"),
                   ftxui::paragraph(draft_command_proposal(source, destination, delete_extraneous, compression, include_git_data,
-                                                          !selected_source_paths.empty(), flatten_selection)),
+                                                          !selected_source_paths.empty(), flatten_selection, include_project_ignored)),
                   ftxui::separator(), ftxui::text("Enter: create Ready Task  F4: previous  Esc: cancel")};
     }
     return ftxui::dbox({dashboard | ftxui::dim,
@@ -505,6 +510,8 @@ int run_tui(const std::filesystem::path& state_dir,
       trusted_daemon = false;
       source_has_git_repository = false;
       include_git_data = false;
+      source_has_project_ignores = false;
+      include_project_ignored = false;
       return true;
     }
     if (!creating && event == ftxui::Event::Character('s')) { settings_open = true; return true; }
@@ -699,9 +706,11 @@ int run_tui(const std::filesystem::path& state_dir,
             if (source.empty() || destination.empty())
               throw std::runtime_error("source and destination are required before continuing");
             const auto source_endpoint = rsync_assistant::parse_endpoint(source);
-            source_has_git_repository = !source_endpoint.remote &&
-                rsync_assistant::detect_project_profile(source_endpoint.path).has_git_repository;
+            const auto profile = !source_endpoint.remote ? rsync_assistant::detect_project_profile(source_endpoint.path) : rsync_assistant::ProjectProfile{};
+            source_has_git_repository = profile.has_git_repository;
+            source_has_project_ignores = !profile.exclusions.empty();
             include_git_data = false;
+            include_project_ignored = false;
             ++wizard_step;
             return true;
           }
@@ -709,7 +718,7 @@ int run_tui(const std::filesystem::path& state_dir,
             ++wizard_step;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection, include_git_data});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
           source.clear();
           destination.clear();
           delete_extraneous = false;
@@ -718,6 +727,8 @@ int run_tui(const std::filesystem::path& state_dir,
           trusted_daemon = false;
           source_has_git_repository = false;
           include_git_data = false;
+          source_has_project_ignores = false;
+          include_project_ignored = false;
           selected_source_paths.clear();
           flatten_selection = false;
           creating = false;

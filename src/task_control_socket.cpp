@@ -85,14 +85,14 @@ std::pair<std::uint32_t, std::string> receive_frame(int descriptor) {
 CreateReadyTask decode_request(const std::string& payload) {
   std::vector<std::string> fields;
   std::size_t offset = 0;
-  while (fields.size() < 9) {
+  while (fields.size() < 10) {
     const auto end = payload.find('\0', offset);
     if (end == std::string::npos) throw std::runtime_error("invalid task request");
     fields.push_back(payload.substr(offset, end - offset));
     offset = end + 1;
   }
   std::size_t selection_count = 0;
-  try { selection_count = std::stoull(fields[8]); }
+  try { selection_count = std::stoull(fields[9]); }
   catch (...) { throw std::runtime_error("invalid selection count"); }
   std::vector<std::string> selections;
   selections.reserve(selection_count);
@@ -106,7 +106,7 @@ CreateReadyTask decode_request(const std::string& payload) {
     throw std::runtime_error("invalid task request");
   return {fields[0], fields[1], fields[2] == "1", fields[3] == "1",
           fields[4] == "1", fields[5] == "1", std::move(selections),
-          fields[6] == "1", fields[7] == "1"};
+          fields[6] == "1", fields[7] == "1", fields[8] == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
@@ -340,6 +340,7 @@ TransferTask TaskControlSocketClient::create_ready_task(
                           (request.trusted_daemon ? "1" : "0") + '\0' +
                           (request.flatten_selection ? "1" : "0") + '\0' +
                           (request.include_git_data ? "1" : "0") + '\0' +
+                          (request.include_project_ignored ? "1" : "0") + '\0' +
                           std::to_string(request.selected_relative_paths.size()) + '\0';
     for (const auto& selection : request.selected_relative_paths) request_payload += selection + '\0';
     send_frame(descriptor, kCreateReadyTask, request_payload);
