@@ -6,6 +6,14 @@
 #include <stdexcept>
 
 namespace rsync_assistant {
+namespace {
+std::string remote_shell_quote(const std::string& value) {
+  std::string quoted{"'"};
+  for (const char character : value)
+    quoted += character == '\'' ? "'\"'\"'" : std::string(1, character);
+  return quoted + "'";
+}
+}  // namespace
 
 Endpoint parse_endpoint(const std::string& value) {
   const auto daemon_separator = value.find("::");
@@ -50,9 +58,7 @@ bool remote_assistant_available(const Endpoint& endpoint) {
 std::vector<std::string> remote_assistant_list(const Endpoint& endpoint) {
   if (!remote_assistant_available(endpoint))
     throw std::runtime_error("remote assistant is unavailable");
-  if (endpoint.path.find('\'') != std::string::npos)
-    throw std::invalid_argument("remote path containing quote is unsupported");
-  const auto command = "rsync-assistant --control-list '" + endpoint.path + "'";
+  const auto command = "rsync-assistant --control-list " + remote_shell_quote(endpoint.path);
   const auto result = ProcessRunner{}.run(
       {RSYNC_ASSISTANT_SSH_PATH, "-o", "BatchMode=yes", "--", endpoint.host, command});
   if (result.exit_code != 0) throw std::runtime_error("remote directory listing failed");
