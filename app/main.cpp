@@ -8,15 +8,58 @@
 #include <ftxui/dom/elements.hpp>
 
 #include <chrono>
+#include <cerrno>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <signal.h>
 #include <unistd.h>
 
 namespace {
+class TuiSessionLock {
+ public:
+  explicit TuiSessionLock(const std::filesystem::path& state_dir)
+      : path_(state_dir / "tui-session.lock") {
+    std::filesystem::create_directories(state_dir);
+    descriptor_ = open(path_.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (descriptor_ < 0 && errno == EEXIST) {
+      std::ifstream existing{path_};
+      pid_t owner = -1;
+      existing >> owner;
+      if (owner <= 0 || (kill(owner, 0) != 0 && errno == ESRCH)) {
+        std::filesystem::remove(path_);
+        descriptor_ = open(path_.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+      }
+    }
+    if (descriptor_ < 0)
+      throw std::runtime_error("another rsync-assistant TUI session is already active");
+    const auto pid = std::to_string(getpid()) + "\n";
+    if (write(descriptor_, pid.data(), pid.size()) != static_cast<ssize_t>(pid.size())) {
+      close(descriptor_);
+      descriptor_ = -1;
+      std::filesystem::remove(path_);
+      throw std::runtime_error("cannot initialize TUI session lock");
+    }
+  }
+
+  ~TuiSessionLock() {
+    if (descriptor_ >= 0) close(descriptor_);
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
+
+  TuiSessionLock(const TuiSessionLock&) = delete;
+  TuiSessionLock& operator=(const TuiSessionLock&) = delete;
+
+ private:
+  std::filesystem::path path_;
+  int descriptor_ = -1;
+};
+
 std::filesystem::path state_directory(int argc, char* argv[]) {
   if (argc >= 3 && std::string_view{argv[argc - 2]} == "--state-dir") return argv[argc - 1];
   return std::filesystem::temp_directory_path() / "rsync-assistant";
@@ -32,6 +75,7 @@ int run_daemon(const std::filesystem::path& state_dir) {
 
 int run_tui(const std::filesystem::path& state_dir,
             const rsync_assistant::Settings& settings) {
+  TuiSessionLock session_lock{state_dir};
   rsync_assistant::TaskControlSocketClient client{state_dir / "control.sock"};
   auto screen = ftxui::ScreenInteractive::Fullscreen();
   std::string status = "r: refresh  q: quit";
