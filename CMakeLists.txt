@@ -87,32 +87,13 @@ target_compile_definitions(rsync_assistant_core PUBLIC
   RSYNC_ASSISTANT_FD_PATH="${RSYNC_ASSISTANT_FD}"
   RSYNC_ASSISTANT_RG_PATH="${RSYNC_ASSISTANT_RG}")
 
-enable_testing()
-
-add_executable(task_control_service_test
-  tests/task_control_service_test.cpp
-)
-target_link_libraries(task_control_service_test PRIVATE rsync_assistant_core)
-add_test(NAME task_control_service_test COMMAND task_control_service_test)
-
-add_executable(task_control_socket_test
-  tests/task_control_socket_test.cpp
-)
-target_link_libraries(task_control_socket_test PRIVATE rsync_assistant_core)
-add_test(NAME task_control_socket_test COMMAND task_control_socket_test)
-
-add_executable(process_runner_test tests/process_runner_test.cpp)
-target_link_libraries(process_runner_test PRIVATE rsync_assistant_core)
-add_test(NAME process_runner_test COMMAND process_runner_test)
-
-add_executable(settings_test tests/settings_test.cpp)
-target_link_libraries(settings_test PRIVATE rsync_assistant_core)
-add_test(NAME settings_test COMMAND settings_test)
-
-add_executable(project_profile_test tests/project_profile_test.cpp)
-target_link_libraries(project_profile_test PRIVATE rsync_assistant_core)
-add_test(NAME project_profile_test COMMAND project_profile_test)
-
-add_executable(endpoint_test tests/endpoint_test.cpp)
-target_link_libraries(endpoint_test PRIVATE rsync_assistant_core)
-add_test(NAME endpoint_test COMMAND endpoint_test)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  enable_testing()
+  foreach(test_name IN ITEMS task_control_service task_control_socket process_runner settings project_profile endpoint)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/${test_name}_test.cpp")
+      add_executable(${test_name}_test "tests/${test_name}_test.cpp")
+      target_link_libraries(${test_name}_test PRIVATE rsync_assistant_core)
+      add_test(NAME ${test_name}_test COMMAND ${test_name}_test)
+    endif()
+  endforeach()
+endif()
