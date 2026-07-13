@@ -449,6 +449,16 @@ int run_tui(const std::filesystem::path& state_dir,
     if (event == ftxui::Event::Character('n')) {
       creating = true;
       wizard_step = 0;
+      source.clear();
+      destination.clear();
+      selected_source_paths.clear();
+      flatten_selection = false;
+      delete_extraneous = false;
+      compression = settings.compression;
+      dry_run = settings.dry_run;
+      trusted_daemon = false;
+      source_has_git_repository = false;
+      include_git_data = false;
       return true;
     }
     if (!creating && event == ftxui::Event::Character('s')) { settings_open = true; return true; }
