@@ -244,6 +244,24 @@ int main(int argc, char* argv[]) {
       std::cout << path << '\n';
       return 0;
     }
+    if (argc == 3 && std::string_view{argv[1]} == "--write-rsyncd-config") {
+      const auto path = std::filesystem::absolute(argv[2]);
+      std::filesystem::create_directories(path.parent_path());
+      std::ofstream output{path};
+      output << "# Review binding, authentication and firewall rules before starting rsync daemon.\n"
+             << "# Do not expose this daemon on untrusted networks.\n"
+             << "use chroot = no\n"
+             << "read only = false\n"
+             << "auth users = REPLACE_ME\n"
+             << "secrets file = REPLACE_WITH_OWNER_ONLY_SECRETS_FILE\n"
+             << "hosts allow = REPLACE_WITH_TRUSTED_SUBNET\n\n"
+             << "[transfer]\n"
+             << "path = REPLACE_WITH_TRANSFER_ROOT\n"
+             << "comment = rsync-assistant managed transfer root\n";
+      if (!output) throw std::runtime_error("cannot write rsync daemon configuration");
+      std::cout << path << '\n';
+      return 0;
+    }
     const auto state_dir = state_directory(argc, argv);
     const std::string_view mode = argc >= 2 ? argv[1] : "";
     if (mode == "daemon") return run_daemon(state_dir);

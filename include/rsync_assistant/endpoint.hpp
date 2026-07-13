@@ -6,6 +6,7 @@ namespace rsync_assistant {
 
 struct Endpoint {
   bool remote = false;
+  bool rsync_daemon = false;
   std::string host;
   std::string path;
 };
