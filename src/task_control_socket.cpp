@@ -123,7 +123,8 @@ std::string encode_task(const TransferTask& task) {
   return task.id + '\0' + task.source + '\0' + task.destination + '\0' + state + '\0' +
          (task.delete_extraneous ? "1" : "0") + '\0' +
          (task.compression ? "1" : "0") + '\0' +
-         (task.dry_run ? "1" : "0") + '\0' + method;
+         (task.dry_run ? "1" : "0") + '\0' + method + '\0' +
+         (task.exit_code ? std::to_string(*task.exit_code) : "");
 }
 
 TransferTask decode_task(const std::string& payload) {
@@ -134,12 +135,13 @@ TransferTask decode_task(const std::string& payload) {
   const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
   const auto sixth = fifth == std::string::npos ? fifth : payload.find('\0', fifth + 1);
   const auto seventh = sixth == std::string::npos ? sixth : payload.find('\0', sixth + 1);
-  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos || seventh == std::string::npos)
+  const auto eighth = seventh == std::string::npos ? seventh : payload.find('\0', seventh + 1);
+  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos || seventh == std::string::npos || eighth == std::string::npos)
     throw std::runtime_error("invalid task response");
   const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false, payload.substr(eighth + 1).empty() ? std::nullopt : std::optional{std::stoi(payload.substr(eighth + 1))}};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -163,7 +165,8 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
     const auto sixth = fifth == std::string::npos ? fifth : payload.find('\0', fifth + 1);
     const auto seventh = sixth == std::string::npos ? sixth : payload.find('\0', sixth + 1);
     const auto eighth = seventh == std::string::npos ? seventh : payload.find('\0', seventh + 1);
-    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos || seventh == std::string::npos || eighth == std::string::npos)
+    const auto ninth = eighth == std::string::npos ? eighth : payload.find('\0', eighth + 1);
+    if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos || sixth == std::string::npos || seventh == std::string::npos || eighth == std::string::npos || ninth == std::string::npos)
       throw std::runtime_error("invalid task list response");
     const auto state = payload.substr(third + 1, fourth - third - 1);
     tasks.push_back({payload.substr(offset, first - offset),
@@ -175,8 +178,8 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1",
                      payload.substr(fifth + 1, sixth - fifth - 1) == "1",
                      payload.substr(sixth + 1, seventh - sixth - 1) == "1",
-                     payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false});
-    offset = eighth + 1;
+                     payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false, payload.substr(eighth + 1, ninth - eighth - 1).empty() ? std::nullopt : std::optional{std::stoi(payload.substr(eighth + 1, ninth - eighth - 1))}});
+    offset = ninth + 1;
   }
   return tasks;
 }
