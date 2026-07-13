@@ -56,6 +56,8 @@ int run_tui(const std::filesystem::path& state_dir,
   bool browse_destination = false;
   bool browse_remote = false;
   std::string browse_remote_prefix;
+  std::string browse_remote_host;
+  std::filesystem::path browse_remote_directory;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
@@ -176,9 +178,14 @@ int run_tui(const std::filesystem::path& state_dir,
         if (endpoint.remote) {
           if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) browse_entries.push_back({path, false, false});
+          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
+            const bool directory = path.ends_with('/');
+            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+          }
           browse_remote = true;
           browse_remote_prefix = endpoint.host + ":";
+          browse_remote_host = endpoint.host;
+          browse_remote_directory = endpoint.path;
         } else {
           browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
           browse_remote = false;
@@ -196,9 +203,14 @@ int run_tui(const std::filesystem::path& state_dir,
         if (endpoint.remote) {
           if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) browse_entries.push_back({path, false, false});
+          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
+            const bool directory = path.ends_with('/');
+            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+          }
           browse_remote = true;
           browse_remote_prefix = endpoint.host + ":";
+          browse_remote_host = endpoint.host;
+          browse_remote_directory = endpoint.path;
         } else {
           browse_directory = destination.empty() ? std::filesystem::current_path() : std::filesystem::path{destination};
           browse_remote = false;
@@ -213,9 +225,37 @@ int run_tui(const std::filesystem::path& state_dir,
       if (event == ftxui::Event::Character('g')) { browse_hidden = !browse_hidden; browse_selected = 0; scan_browser(); return true; }
       if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_entries.size())) { ++browse_selected; return true; }
       if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
-      if (!browse_remote && event == ftxui::Event::Character('h')) { browse_directory = browse_directory.parent_path(); browse_selected = 0; scan_browser(); return true; }
+      if (event == ftxui::Event::Character('h')) {
+        if (!browse_remote) {
+          browse_directory = browse_directory.parent_path();
+          scan_browser();
+        } else {
+          browse_remote_directory = browse_remote_directory.parent_path();
+          browse_entries.clear();
+          for (const auto& path : rsync_assistant::remote_assistant_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
+            const bool directory = path.ends_with('/');
+            browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+          }
+        }
+        browse_selected = 0;
+        return true;
+      }
       if (!browse_entries.empty() && (event == ftxui::Event::Character('l'))) {
-        if (!browse_remote && browse_entries.at(browse_selected).directory) { browse_directory = browse_entries.at(browse_selected).path; browse_selected = 0; scan_browser(); }
+        if (browse_entries.at(browse_selected).directory) {
+          if (!browse_remote) {
+            browse_directory = browse_entries.at(browse_selected).path;
+            scan_browser();
+          } else {
+            const auto next_directory = browse_entries.at(browse_selected).path;
+            browse_entries.clear();
+            browse_remote_directory = next_directory;
+            for (const auto& path : rsync_assistant::remote_assistant_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
+              const bool directory = path.ends_with('/');
+              browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+            }
+          }
+          browse_selected = 0;
+        }
         return true;
       }
       if (!browse_entries.empty() && (event == ftxui::Event::Return || event == ftxui::Event::Character(' '))) {
@@ -344,8 +384,11 @@ int main(int argc, char* argv[]) {
     }
     if (const auto* path = option_value("--control-list")) {
       for (const auto& entry : std::filesystem::directory_iterator(
-               path, std::filesystem::directory_options::skip_permission_denied))
-        std::cout << entry.path().string() << '\n';
+               path, std::filesystem::directory_options::skip_permission_denied)) {
+        std::cout << entry.path().string();
+        if (entry.is_directory()) std::cout << '/';
+        std::cout << '\n';
+      }
       return 0;
     }
     if (const auto* requested_path = option_value("--write-default-config")) {
