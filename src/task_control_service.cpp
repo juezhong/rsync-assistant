@@ -53,6 +53,19 @@ std::string render_command(const std::vector<std::string>& arguments) {
   return command;
 }
 
+std::string deletion_summary(const std::string& output) {
+  std::size_t count = 0;
+  std::size_t offset = 0;
+  while (offset < output.size()) {
+    const auto end = output.find('\n', offset);
+    const auto line = output.substr(offset, end - offset);
+    if (line.find("deleting ") != std::string::npos) ++count;
+    if (end == std::string::npos) break;
+    offset = end + 1;
+  }
+  return std::format("\nrsync-assistant deletion preflight: {} destination entries would be deleted.\n", count);
+}
+
 void persist_destination_log(const TransferTask& task) {
   const auto destination = parse_endpoint(task.destination);
   if (destination.remote) return;
@@ -224,13 +237,15 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto command = render_command(arguments);
   auto preflight_arguments = arguments;
   preflight_arguments.insert(preflight_arguments.begin() + 5, "--dry-run");
+  if (it->delete_extraneous) preflight_arguments.insert(preflight_arguments.begin() + 6, "--itemize-changes");
   const auto result = it->dry_run ? ProcessRunner{}.run(preflight_arguments) :
                                   ProcessResult{0, "Dry-run disabled by task settings; command is ready for confirmation.\n"};
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
   Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
-  check_sqlite(sqlite3_bind_text(statement.get(), 3, result.output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
+  const auto output = result.output + (it->delete_extraneous && it->dry_run ? deletion_summary(result.output) : "");
+  check_sqlite(sqlite3_bind_text(statement.get(), 3, output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
   check_sqlite(sqlite3_bind_text(statement.get(), 4, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update preflight");
   return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
