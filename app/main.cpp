@@ -83,6 +83,7 @@ int run_tui(const std::filesystem::path& state_dir,
   std::vector<rsync_assistant::TransferTask> tasks;
   int selected = 0;
   bool creating = false;
+  int wizard_step = 0;
   std::string source;
   std::string destination;
   bool delete_extraneous = false;
@@ -183,16 +184,26 @@ int run_tui(const std::filesystem::path& state_dir,
                           ftxui::window(ftxui::text("Select source path"),
                                         ftxui::paragraph(entries)) | ftxui::center});
     }
+    ftxui::Elements contents;
+    if (wizard_step == 0) {
+      contents = {ftxui::text("Step 1/3: endpoints"), source_input->Render(),
+                  destination_input->Render(), ftxui::separator(),
+                  ftxui::text("F2: source picker  F3: destination picker"),
+                  ftxui::text("Enter: next  Esc: cancel")};
+    } else if (wizard_step == 1) {
+      contents = {ftxui::text("Step 2/3: transfer options"), dry_run_checkbox->Render(),
+                  compression_checkbox->Render(), delete_checkbox->Render(), ftxui::separator(),
+                  ftxui::text("Enter: review  F4: previous  Esc: cancel")};
+    } else {
+      contents = {ftxui::text("Step 3/3: review"),
+                  ftxui::text("Source: " + source), ftxui::text("Destination: " + destination),
+                  ftxui::text(std::string{"Dry-run: "} + (dry_run ? "enabled" : "disabled")),
+                  ftxui::text(std::string{"Compression: "} + (compression ? "enabled" : "disabled")),
+                  ftxui::text(std::string{"Deletion: "} + (delete_extraneous ? "enabled" : "disabled")),
+                  ftxui::separator(), ftxui::text("Enter: create Ready Task  F4: previous  Esc: cancel")};
+    }
     return ftxui::dbox({dashboard | ftxui::dim,
-                        ftxui::window(ftxui::text("New task"),
-                                      ftxui::vbox({source_input->Render(),
-                                                   destination_input->Render(),
-                                                   dry_run_checkbox->Render(),
-                                                   compression_checkbox->Render(),
-                                                   delete_checkbox->Render(),
-                                                   ftxui::separator(),
-                                                   ftxui::text("F2: source picker  F3: destination picker"),
-                                                   ftxui::text("Enter: create  Esc: cancel")})) |
+                        ftxui::window(ftxui::text("New task"), ftxui::vbox(std::move(contents))) |
                             ftxui::center});
   });
   root = ftxui::CatchEvent(root, [&](ftxui::Event event) {
@@ -206,6 +217,7 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (event == ftxui::Event::Character('n')) {
       creating = true;
+      wizard_step = 0;
       return true;
     }
     if (event == ftxui::Event::Escape && (delete_confirming || scp_confirming)) {
@@ -215,7 +227,7 @@ int run_tui(const std::filesystem::path& state_dir,
       scp_confirmation.clear();
       return true;
     }
-    if (creating && event == ftxui::Event::F2) {
+    if (creating && wizard_step == 0 && event == ftxui::Event::F2) {
       browse_destination = false;
       const auto endpoint = rsync_assistant::parse_endpoint(source);
       browse_selected = 0;
@@ -240,7 +252,7 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (creating && event == ftxui::Event::F3) {
+    if (creating && wizard_step == 0 && event == ftxui::Event::F3) {
       browse_destination = true;
       const auto endpoint = rsync_assistant::parse_endpoint(destination);
       browse_selected = 0;
@@ -316,6 +328,10 @@ int run_tui(const std::filesystem::path& state_dir,
       creating = false;
       return true;
     }
+    if (creating && !browsing && event == ftxui::Event::F4 && wizard_step > 0) {
+      --wizard_step;
+      return true;
+    }
     if (event == ftxui::Event::Return) {
       try {
         if (delete_confirming) {
@@ -335,6 +351,16 @@ int run_tui(const std::filesystem::path& state_dir,
           return true;
         }
         if (creating) {
+          if (wizard_step == 0) {
+            if (source.empty() || destination.empty())
+              throw std::runtime_error("source and destination are required before continuing");
+            ++wizard_step;
+            return true;
+          }
+          if (wizard_step == 1) {
+            ++wizard_step;
+            return true;
+          }
           (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run});
           source.clear();
           destination.clear();
@@ -342,6 +368,7 @@ int run_tui(const std::filesystem::path& state_dir,
           compression = settings.compression;
           dry_run = settings.dry_run;
           creating = false;
+          wizard_step = 0;
           refresh();
         } else if (!tasks.empty()) {
           const auto& task = tasks.at(selected);
