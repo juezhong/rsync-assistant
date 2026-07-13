@@ -25,7 +25,8 @@ class Statement {
 class Database {
  public:
   explicit Database(const std::filesystem::path& path) {
-    check(sqlite3_open_v2(path.c_str(), &database_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr), database_);
+    check(sqlite3_open_v2(path.c_str(), &database_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), database_);
+    check(sqlite3_busy_timeout(database_, 1000), database_);
     check(sqlite3_exec(database_, "CREATE TABLE IF NOT EXISTS transport_benchmarks ("
           "endpoint_pair TEXT PRIMARY KEY, daemon_mbps REAL NOT NULL, ssh_mbps REAL NOT NULL, measured_unix_seconds INTEGER NOT NULL)",
           nullptr, nullptr, nullptr), database_);
