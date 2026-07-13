@@ -76,7 +76,8 @@ printf '%s\n' "  bundled rsync: $bundled"
 printf '%s\n' "  parallel compile jobs: $build_jobs (min(logical CPUs, 16))"
 printf '%s\n' "  step 1/3: configure CMake"
 cmake -S "$root" -B "$build_dir" \
-  -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled"
+  -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled" \
+  -DRSYNC_ASSISTANT_BUILD_JOBS="$build_jobs"
 if [ "$bundled" = "ON" ]; then
   # Keep rsync's configure output in its own phase.  Otherwise CMake may
   # schedule it alongside FTXUI compilation and interleave both logs.

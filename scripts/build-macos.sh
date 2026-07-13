@@ -37,6 +37,7 @@ printf '%s\n' "  bundled rsync: $bundled"
 printf '%s\n' "  parallel compile jobs: $build_jobs (min(logical CPUs, 16))"
 printf '%s\n' "  step 1/2: configure CMake"
 cmake -S "$root" -B "$build_dir" \
-  -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled"
+  -DRSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC="$bundled" \
+  -DRSYNC_ASSISTANT_BUILD_JOBS="$build_jobs"
 printf '%s\n' "  step 2/2: build targets"
 cmake --build "$build_dir" --parallel "$build_jobs"

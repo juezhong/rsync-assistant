@@ -71,11 +71,11 @@ cmake --build build --parallel
 | 构建目录 | 默认 `./build`，可用 `BUILD_DIR=/path` 覆盖 | 相同 |
 | 配置 CMake | `cmake -S <root> -B <build>` | 相同 |
 | rsync 选择 | 默认 `RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC=ON`，构建 `third_party/rsync` | 默认 `OFF`，使用系统 rsync 进行首次构建 |
-| 编译 | 先单独完成 bundled rsync，再并行编译主程序与 FTXUI | `cmake --build <build> --parallel <min(逻辑 CPU, 16)>` |
+| 编译 | 先并行完成 bundled rsync，再并行编译主程序与 FTXUI | `cmake --build <build> --parallel <min(逻辑 CPU, 16)>` |
 
 Linux 的 bundled 选项开启时，CMake 会在 `build/private-rsync/` 调用子模块自带的 `configure` 和 `make`，生成私有 `rsync`；程序运行时优先使用它。脚本开头的 `set -eu` 表示任一步失败都会立即停止，也会把未定义变量当成错误，避免在失败后继续产生不完整构建。
 
-脚本内部自动把并发编译数设为 `min(逻辑 CPU 数, 16)`，并在开始时打印最终数字；用户不需要设置线程参数。Linux bundled 模式还会先单独完成 rsync，再并行编译主程序与 FTXUI，避免 rsync 的 `configure` 输出和 FTXUI 编译日志混在一起。主程序阶段的多行输出仍可能交错，这是多个并行编译进程同时输出日志的正常现象，不代表脚本启动了后台传输或其他异步任务。
+脚本内部自动把并发编译数设为 `min(逻辑 CPU 数, 16)`，并在开始时打印最终数字；用户不需要设置线程参数。Linux bundled 模式会先用同一个 job 数并行完成 rsync，再并行编译主程序与 FTXUI，避免 rsync 的 `configure` 输出和 FTXUI 编译日志混在一起。主程序阶段的多行输出仍可能交错，这是多个并行编译进程同时输出日志的正常现象，不代表脚本启动了后台传输或其他异步任务。
 
 #### Linux bundled-rsync prerequisites
 
