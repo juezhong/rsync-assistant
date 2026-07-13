@@ -61,7 +61,7 @@ if(RSYNC_ASSISTANT_BUILD_BUNDLED_RSYNC AND EXISTS "${RSYNC_SOURCE_DIR}/configure
     OUTPUT "${RSYNC_BINARY}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${RSYNC_BUILD_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E chdir "${RSYNC_BUILD_DIR}"
-            "${RSYNC_SOURCE_DIR}/configure" --with-included-popt
+            "${RSYNC_SOURCE_DIR}/configure" --with-included-popt --disable-md2man
     COMMAND "${CMAKE_COMMAND}" -E chdir "${RSYNC_BUILD_DIR}"
             "${CMAKE_MAKE_PROGRAM}"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"

@@ -50,13 +50,6 @@ if [ "$bundled" = "ON" ]; then
   require_command autoconf "install autoconf"
   require_command autoheader "install autoconf"
   require_command gawk "install gawk"
-  require_command python3 "install python3 and python3-cmarkgfm or python3-commonmark"
-  if command -v python3 >/dev/null 2>&1 &&
-     ! python3 -c 'import cmarkgfm' >/dev/null 2>&1 &&
-     ! python3 -c 'import commonmark' >/dev/null 2>&1; then
-    printf '%s\n' "missing Python Markdown module: install python3-cmarkgfm or python3-commonmark" >&2
-    missing=1
-  fi
   if [ ! -x "$root/third_party/rsync/configure" ]; then
     printf '%s\n' "missing rsync submodule: run git submodule update --init --recursive" >&2
     missing=1
