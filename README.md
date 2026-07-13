@@ -30,11 +30,13 @@ git submodule update --init --recursive
 常见 Linux 依赖安装命令：
 
 ```sh
-# Debian / Ubuntu
-sudo apt install build-essential cmake git make libsqlite3-dev rsync openssh-client
+# Debian / Ubuntu: bundled rsync 的完整基础构建链
+sudo apt install build-essential cmake git make libsqlite3-dev rsync openssh-client \
+  autoconf automake gawk python3 python3-cmarkgfm
 
-# Fedora / RHEL
-sudo dnf install gcc-c++ cmake git make sqlite-devel rsync openssh-clients
+# Fedora / RHEL（Markdown 模块包名可能是 python3-cmarkgfm 或 python3-commonmark）
+sudo dnf install gcc-c++ cmake git make sqlite-devel rsync openssh-clients \
+  autoconf automake gawk python3 python3-cmarkgfm
 
 # Arch Linux
 sudo pacman -S --needed base-devel cmake git sqlite rsync openssh
@@ -72,6 +74,16 @@ cmake --build build --parallel
 | 编译 | `cmake --build <build> --parallel` | 相同 |
 
 Linux 的 bundled 选项开启时，CMake 会在 `build/private-rsync/` 调用子模块自带的 `configure` 和 `make`，生成私有 `rsync`；程序运行时优先使用它。脚本开头的 `set -eu` 表示任一步失败都会立即停止，也会把未定义变量当成错误，避免在失败后继续产生不完整构建。
+
+#### Linux bundled-rsync prerequisites
+
+运行 `scripts/build-linux.sh` 时，脚本会先检查并明确报告缺失项：
+
+- 始终需要：`cmake`、`make`、`cc`、`c++`、`git`、`ssh`、`scp`，以及可编译和链接的 SQLite 开发文件。
+- 默认 bundled rsync 额外需要：`aclocal`（来自 `automake`）、`autoconf`、`autoheader`、`gawk`、`python3`，以及 Python 的 `cmarkgfm` 或 `commonmark` 模块。
+- `acl`、`attr`、`xxhash`、`zstd`、`lz4`、OpenSSL 等开发包是 rsync 的可选能力：缺少时 rsync 会减少相应功能或性能特性，不会作为本项目基础构建的硬性前置条件。
+
+因此如果看到 `aclocal: command not found`，应安装 `automake`；不要只重跑 CMake。脚本会在 CMake 开始前就报出这一点。
 
 常用的显式调用如下：
 
