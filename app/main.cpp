@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <signal.h>
 #include <unistd.h>
 
@@ -87,6 +88,8 @@ int run_tui(const std::filesystem::path& state_dir,
   int wizard_step = 0;
   std::string source;
   std::string destination;
+  std::vector<std::string> selected_source_paths;
+  bool flatten_selection = false;
   bool delete_extraneous = false;
   bool compression = settings.compression;
   bool dry_run = settings.dry_run;
@@ -103,6 +106,8 @@ int run_tui(const std::filesystem::path& state_dir,
   bool browse_hidden = false;
   bool browse_destination = false;
   bool browse_remote = false;
+  std::filesystem::path browse_root;
+  std::unordered_set<std::string> browse_selected_paths;
   std::string browse_remote_prefix;
   std::string browse_remote_host;
   std::filesystem::path browse_remote_directory;
@@ -205,12 +210,16 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (!creating) return dashboard;
     if (browsing) {
-      std::string entries = "h: parent  l: enter  g: hidden  Space/Enter: select\n\n";
+      std::string entries = browse_destination ? "h: parent  l: enter  g: hidden  Enter: select\n\n" :
+                                                 "h: parent  l: enter  g: hidden  Space: toggle  f: flatten  Enter: confirm\n\n";
       entries += browse_directory.string() + "\n";
       for (std::size_t index = 0; index < browse_entries.size(); ++index)
-        entries += (static_cast<int>(index) == browse_selected ? "> " : "  ") +
+        entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} +
+                   (!browse_destination && browse_selected_paths.contains(browse_entries[index].path.string()) ? "[x] " : "[ ] ") +
                    browse_entries[index].path.filename().string() +
                    (browse_entries[index].directory ? "/\n" : "\n");
+      if (!browse_destination && !browse_remote)
+        entries += "\nRoot: " + browse_root.string() + "\nStructure: " + (flatten_selection ? "flatten" : "preserve relative paths");
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Select source path"),
                                         ftxui::paragraph(entries)) | ftxui::center});
@@ -231,6 +240,8 @@ int run_tui(const std::filesystem::path& state_dir,
                   ftxui::text(std::string{"Dry-run: "} + (dry_run ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Compression: "} + (compression ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Deletion: "} + (delete_extraneous ? "enabled" : "disabled")),
+                  ftxui::text(selected_source_paths.empty() ? "Selection: whole source" :
+                              "Selection: " + std::to_string(selected_source_paths.size()) + " entries (" + (flatten_selection ? "flatten" : "preserve paths") + ")"),
                   ftxui::separator(), ftxui::text("Enter: create Ready Task  F4: previous  Esc: cancel")};
     }
     return ftxui::dbox({dashboard | ftxui::dim,
@@ -283,6 +294,9 @@ int run_tui(const std::filesystem::path& state_dir,
           browse_remote_directory = endpoint.path;
         } else {
           browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
+          browse_root = browse_directory;
+          browse_selected_paths.clear();
+          flatten_selection = false;
           browse_remote = false;
           scan_browser();
         }
@@ -353,10 +367,38 @@ int run_tui(const std::filesystem::path& state_dir,
         }
         return true;
       }
-      if (!browse_entries.empty() && (event == ftxui::Event::Return || event == ftxui::Event::Character(' '))) {
+      if (!browse_destination && !browse_remote && !browse_entries.empty() && event == ftxui::Event::Character(' ')) {
+        const auto path = browse_entries.at(browse_selected).path.string();
+        if (browse_selected_paths.contains(path)) browse_selected_paths.erase(path);
+        else browse_selected_paths.insert(path);
+        return true;
+      }
+      if (!browse_destination && !browse_remote && event == ftxui::Event::Character('f')) {
+        flatten_selection = !flatten_selection;
+        return true;
+      }
+      if (!browse_entries.empty() && event == ftxui::Event::Return) {
+        if (!browse_destination && !browse_remote) {
+          if (browse_selected_paths.empty()) {
+            status = "Select one or more source entries with Space";
+            return true;
+          }
+          source = browse_root.string() + "/";
+          selected_source_paths.clear();
+          for (const auto& selected_path : browse_selected_paths) {
+            std::error_code error;
+            const auto relative = std::filesystem::relative(selected_path, browse_root, error);
+            if (error || relative.empty() || relative.is_absolute()) {
+              status = "Selected path is outside the source root";
+              return true;
+            }
+            selected_source_paths.push_back(relative.generic_string());
+          }
+        } else {
         const auto selected_path = (browse_remote ? browse_remote_prefix : "") + browse_entries.at(browse_selected).path.string();
         if (browse_destination) destination = selected_path;
         else source = selected_path;
+        }
         browsing = false;
         return true;
       }
@@ -399,13 +441,15 @@ int run_tui(const std::filesystem::path& state_dir,
             ++wizard_step;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, selected_source_paths, flatten_selection});
           source.clear();
           destination.clear();
           delete_extraneous = false;
           compression = settings.compression;
           dry_run = settings.dry_run;
           trusted_daemon = false;
+          selected_source_paths.clear();
+          flatten_selection = false;
           creating = false;
           wizard_step = 0;
           refresh();

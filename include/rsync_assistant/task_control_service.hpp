@@ -17,6 +17,9 @@ struct CreateReadyTask {
   bool compression = false;
   bool dry_run = true;
   bool trusted_daemon = false;
+  // Paths are relative to source.  An empty list transfers the whole source.
+  std::vector<std::string> selected_relative_paths;
+  bool flatten_selection = false;
 };
 
 struct TransferTask {
@@ -30,6 +33,8 @@ struct TransferTask {
   bool compression = false;
   bool dry_run = true;
   TransferMethod method = TransferMethod::local_rsync;
+  std::size_t selected_path_count = 0;
+  bool flatten_selection = false;
 };
 
 class TaskControlService {

@@ -4,6 +4,7 @@
 #include "rsync_assistant/rsync_locator.hpp"
 #include "rsync_assistant/endpoint.hpp"
 #include "rsync_assistant/project_profile.hpp"
+#include "rsync_assistant/selection_manifest.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <sqlite3.h>
 #include <stdexcept>
 #include <string_view>
@@ -102,10 +104,12 @@ class Statement {
 
 struct TaskControlService::Impl {
   sqlite3* database = nullptr;
+  std::filesystem::path state_directory;
   std::mutex process_mutex;
   std::unordered_map<std::string, ManagedProcess> processes;
 
-  explicit Impl(const std::filesystem::path& database_path) {
+  explicit Impl(const std::filesystem::path& database_path)
+      : state_directory(database_path.parent_path()) {
     check_sqlite(sqlite3_open_v2(database_path.c_str(), &database,
                                  SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
                                      SQLITE_OPEN_FULLMUTEX,
@@ -138,6 +142,15 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN trusted_daemon INTEGER NOT NULL DEFAULT 0",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN selection_manifest TEXT NOT NULL DEFAULT ''",
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN selected_path_count INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN flatten_selection INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
                               "WHERE state IN ('running', 'paused')",
@@ -162,9 +175,30 @@ TransferTask TaskControlService::create_ready_task(
   const auto destination_endpoint = parse_endpoint(request.destination);
   const auto method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
                       (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
+  std::filesystem::path manifest_path;
+  if (!request.selected_relative_paths.empty()) {
+    if (source_endpoint.remote)
+      throw std::invalid_argument("multi-selection currently requires a local source root");
+    SelectionManifest manifest{source_endpoint.path, {}, request.flatten_selection};
+    std::unordered_set<std::string> flattened_names;
+    for (const auto& value : request.selected_relative_paths) {
+      const std::filesystem::path relative{value};
+      if (request.flatten_selection && !flattened_names.insert(relative.filename().string()).second)
+        throw std::invalid_argument("flattened selections must not have duplicate file names");
+      manifest.relative_paths.push_back(relative);
+    }
+    const auto data = manifest.nul_delimited_paths();
+    manifest_path = impl_->state_directory / "manifests" / (id + ".from0");
+    std::error_code error;
+    std::filesystem::create_directories(manifest_path.parent_path(), error);
+    if (error) throw std::runtime_error("cannot create selection manifest directory");
+    std::ofstream file{manifest_path, std::ios::binary | std::ios::trunc};
+    file.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!file) throw std::runtime_error("cannot write selection manifest");
+  }
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?, ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection) "
+                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?, ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -184,13 +218,17 @@ TransferTask TaskControlService::create_ready_task(
                impl_->database, "bind transfer method");
   check_sqlite(sqlite3_bind_int(statement.get(), 8, request.trusted_daemon),
                impl_->database, "bind trusted daemon");
+  const auto manifest_text = manifest_path.string();
+  check_sqlite(sqlite3_bind_text(statement.get(), 9, manifest_text.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind selection manifest");
+  check_sqlite(sqlite3_bind_int(statement.get(), 10, static_cast<int>(request.selected_relative_paths.size())), impl_->database, "bind selection count");
+  check_sqlite(sqlite3_bind_int(statement.get(), 11, request.flatten_selection), impl_->database, "bind flatten selection");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
-  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run};
+  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run, TransferMethod::local_rsync, request.selected_relative_paths.size(), request.flatten_selection};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, selected_path_count, flatten_selection FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -214,6 +252,8 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
         std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "rsync_daemon" ? TransferMethod::rsync_daemon :
         std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "rsync_ssh" ? TransferMethod::rsync_ssh :
         std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "scp" ? TransferMethod::scp : TransferMethod::local_rsync,
+        static_cast<std::size_t>(sqlite3_column_int(statement.get(), 10)),
+        sqlite3_column_int(statement.get(), 11) != 0,
     });
   }
   return tasks;
@@ -288,6 +328,18 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
       arguments.push_back(exclusion);
     }
   }
+  {
+    Statement manifest{impl_->database, "SELECT selection_manifest, flatten_selection FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(manifest.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    if (sqlite3_step(manifest.get()) == SQLITE_ROW) {
+      const auto* path = sqlite3_column_text(manifest.get(), 0);
+      if (path != nullptr && *path != '\0') {
+        arguments.push_back("--from0");
+        arguments.push_back("--files-from=" + std::string{reinterpret_cast<const char*>(path)});
+        if (sqlite3_column_int(manifest.get(), 1) != 0) arguments.push_back("--no-relative");
+      }
+    }
+  }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});
   const auto command = render_command(arguments);
   auto preflight_arguments = arguments;
@@ -321,6 +373,18 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
     for (const auto& exclusion : detect_project_profile(local_source.path).exclusions) {
       arguments.push_back("--exclude");
       arguments.push_back(exclusion);
+    }
+  }
+  {
+    Statement manifest{impl_->database, "SELECT selection_manifest, flatten_selection FROM transfer_tasks WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(manifest.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    if (sqlite3_step(manifest.get()) == SQLITE_ROW) {
+      const auto* path = sqlite3_column_text(manifest.get(), 0);
+      if (path != nullptr && *path != '\0') {
+        arguments.push_back("--from0");
+        arguments.push_back("--files-from=" + std::string{reinterpret_cast<const char*>(path)});
+        if (sqlite3_column_int(manifest.get(), 1) != 0) arguments.push_back("--no-relative");
+      }
     }
   }
   arguments.insert(arguments.end(), {"--", it->source, it->destination});

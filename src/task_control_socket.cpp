@@ -82,20 +82,30 @@ std::pair<std::uint32_t, std::string> receive_frame(int descriptor) {
 }
 
 CreateReadyTask decode_request(const std::string& payload) {
-  const auto first = payload.find('\0');
-  const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
-  const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
-  const auto fourth = third == std::string::npos ? third : payload.find('\0', third + 1);
-  const auto fifth = fourth == std::string::npos ? fourth : payload.find('\0', fourth + 1);
-  if (first == std::string::npos || second == std::string::npos || third == std::string::npos || fourth == std::string::npos || fifth == std::string::npos)
+  std::vector<std::string> fields;
+  std::size_t offset = 0;
+  while (fields.size() < 8) {
+    const auto end = payload.find('\0', offset);
+    if (end == std::string::npos) throw std::runtime_error("invalid task request");
+    fields.push_back(payload.substr(offset, end - offset));
+    offset = end + 1;
+  }
+  std::size_t selection_count = 0;
+  try { selection_count = std::stoull(fields[7]); }
+  catch (...) { throw std::runtime_error("invalid selection count"); }
+  std::vector<std::string> selections;
+  selections.reserve(selection_count);
+  for (std::size_t index = 0; index < selection_count; ++index) {
+    const auto end = payload.find('\0', offset);
+    if (end == std::string::npos) throw std::runtime_error("truncated selection request");
+    selections.push_back(payload.substr(offset, end - offset));
+    offset = end + 1;
+  }
+  if (offset != payload.size())
     throw std::runtime_error("invalid task request");
-  const auto destination = payload.substr(first + 1,
-                                          second - first - 1);
-  return {payload.substr(0, first), destination,
-          payload.substr(second + 1, third - second - 1) == "1",
-          payload.substr(third + 1, fourth - third - 1) == "1",
-          payload.substr(fourth + 1, fifth - fourth - 1) == "1",
-          payload.substr(fifth + 1) == "1"};
+  return {fields[0], fields[1], fields[2] == "1", fields[3] == "1",
+          fields[4] == "1", fields[5] == "1", std::move(selections),
+          fields[6] == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
@@ -128,7 +138,7 @@ TransferTask decode_task(const std::string& payload) {
   const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync};
+          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -164,7 +174,7 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1",
                      payload.substr(fifth + 1, sixth - fifth - 1) == "1",
                      payload.substr(sixth + 1, seventh - sixth - 1) == "1",
-                     payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync});
+                     payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false});
     offset = eighth + 1;
   }
   return tasks;
@@ -316,12 +326,15 @@ TransferTask TaskControlSocketClient::create_ready_task(
     const CreateReadyTask& request) const {
   const int descriptor = connect_to(socket_path_);
   try {
-    send_frame(descriptor, kCreateReadyTask,
-               request.source + '\0' + request.destination + '\0' +
-                   (request.delete_extraneous ? "1" : "0") + '\0' +
-                   (request.compression ? "1" : "0") + '\0' +
-                   (request.dry_run ? "1" : "0") + '\0' +
-                   (request.trusted_daemon ? "1" : "0"));
+    std::string request_payload = request.source + '\0' + request.destination + '\0' +
+                          (request.delete_extraneous ? "1" : "0") + '\0' +
+                          (request.compression ? "1" : "0") + '\0' +
+                          (request.dry_run ? "1" : "0") + '\0' +
+                          (request.trusted_daemon ? "1" : "0") + '\0' +
+                          (request.flatten_selection ? "1" : "0") + '\0' +
+                          std::to_string(request.selected_relative_paths.size()) + '\0';
+    for (const auto& selection : request.selected_relative_paths) request_payload += selection + '\0';
+    send_frame(descriptor, kCreateReadyTask, request_payload);
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
     require_response(type, kTaskResponse, payload, "task");
