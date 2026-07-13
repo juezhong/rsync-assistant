@@ -70,8 +70,11 @@ Settings Settings::load(const std::filesystem::path& path) {
   const auto permissions = std::filesystem::status(path).permissions();
   const auto public_bits = std::filesystem::perms::group_read | std::filesystem::perms::group_write |
                            std::filesystem::perms::others_read | std::filesystem::perms::others_write;
-  if (settings.ai_enabled && !settings.api_key.empty() && (permissions & public_bits) != std::filesystem::perms::none)
-    throw std::runtime_error("AI settings require an owner-only configuration file");
+  if (settings.ai_enabled && !settings.api_key.empty() && (permissions & public_bits) != std::filesystem::perms::none) {
+    // Do not prevent ordinary transfer work because an optional AI key is unsafe.
+    settings.ai_enabled = false;
+    settings.api_key.clear();
+  }
   return settings;
 }
 
