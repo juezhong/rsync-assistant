@@ -191,6 +191,7 @@ int run_tui(const std::filesystem::path& state_dir,
                                                    compression_checkbox->Render(),
                                                    delete_checkbox->Render(),
                                                    ftxui::separator(),
+                                                   ftxui::text("F2: source picker  F3: destination picker"),
                                                    ftxui::text("Enter: create  Esc: cancel")})) |
                             ftxui::center});
   });
@@ -214,7 +215,7 @@ int run_tui(const std::filesystem::path& state_dir,
       scp_confirmation.clear();
       return true;
     }
-    if (creating && event == ftxui::Event::Character('b')) {
+    if (creating && event == ftxui::Event::F2) {
       browse_destination = false;
       const auto endpoint = rsync_assistant::parse_endpoint(source);
       browse_selected = 0;
@@ -239,7 +240,7 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (creating && event == ftxui::Event::Character('B')) {
+    if (creating && event == ftxui::Event::F3) {
       browse_destination = true;
       const auto endpoint = rsync_assistant::parse_endpoint(destination);
       browse_selected = 0;
