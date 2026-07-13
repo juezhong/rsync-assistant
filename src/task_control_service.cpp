@@ -274,6 +274,7 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
     const auto task_state = state == "ready" ? TaskState::ready :
+                            state == "preflighting" ? TaskState::preflighting :
                             state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
                             state == "running" ? TaskState::running :
                             state == "paused" ? TaskState::paused :
@@ -352,6 +353,11 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   auto tasks = list_tasks();
   const auto it = std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == task_id; });
   if (it == tasks.end() || it->state != TaskState::ready) throw std::runtime_error("task is not ready for preflight");
+  {
+    Statement state_update{impl_->database, "UPDATE transfer_tasks SET state='preflighting', output='', exit_code=NULL WHERE id=?"};
+    check_sqlite(sqlite3_bind_text(state_update.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
+    check_sqlite(sqlite3_step(state_update.get()), impl_->database, "start preflight");
+  }
   const auto source_endpoint = parse_endpoint(it->source);
   const auto destination_endpoint = parse_endpoint(it->destination);
   const auto remote_endpoint = source_endpoint.remote ? source_endpoint : destination_endpoint;

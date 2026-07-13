@@ -114,6 +114,7 @@ std::string encode_task(const TransferTask& task) {
                       task.method == TransferMethod::rsync_ssh ? "rsync_ssh" :
                       task.method == TransferMethod::scp ? "scp" : "local_rsync";
   const auto state = task.state == TaskState::ready ? "ready" :
+                     task.state == TaskState::preflighting ? "preflighting" :
                      task.state == TaskState::awaiting_execution_confirmation ? "awaiting_confirmation" :
                      task.state == TaskState::running ? "running" :
                      task.state == TaskState::paused ? "paused" :
@@ -141,7 +142,7 @@ TransferTask decode_task(const std::string& payload) {
   const auto state = payload.substr(third + 1, fourth - third - 1);
   return {payload.substr(0, first), payload.substr(first + 1, second - first - 1),
           payload.substr(second + 1, third - second - 1),
-          state == "ready" ? TaskState::ready : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false, payload.substr(eighth + 1).empty() ? std::nullopt : std::optional{std::stoi(payload.substr(eighth + 1))}};
+          state == "ready" ? TaskState::ready : state == "preflighting" ? TaskState::preflighting : state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation : state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed, "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1", payload.substr(fifth + 1, sixth - fifth - 1) == "1", payload.substr(sixth + 1, seventh - sixth - 1) == "1", payload.substr(seventh + 1, eighth - seventh - 1) == "scp" ? TransferMethod::scp : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_daemon" ? TransferMethod::rsync_daemon : payload.substr(seventh + 1, eighth - seventh - 1) == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync, 0, false, payload.substr(eighth + 1).empty() ? std::nullopt : std::optional{std::stoi(payload.substr(eighth + 1))}};
 }
 
 std::string encode_tasks(const std::vector<TransferTask>& tasks) {
@@ -173,6 +174,7 @@ std::vector<TransferTask> decode_tasks(const std::string& payload) {
                      payload.substr(first + 1, second - first - 1),
                      payload.substr(second + 1, third - second - 1),
                      state == "ready" ? TaskState::ready :
+                     state == "preflighting" ? TaskState::preflighting :
                      state == "awaiting_confirmation" ? TaskState::awaiting_execution_confirmation :
                      state == "running" ? TaskState::running : state == "paused" ? TaskState::paused : state == "completed" ? TaskState::completed : state == "cancelled" ? TaskState::cancelled : state == "interrupted" ? TaskState::interrupted : TaskState::failed,
                      "", "", payload.substr(fourth + 1, fifth - fourth - 1) == "1",

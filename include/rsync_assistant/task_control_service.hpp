@@ -8,7 +8,7 @@
 
 namespace rsync_assistant {
 
-enum class TaskState { ready, awaiting_execution_confirmation, running, paused, completed, failed, cancelled, interrupted };
+enum class TaskState { ready, preflighting, awaiting_execution_confirmation, running, paused, completed, failed, cancelled, interrupted };
 enum class TransferMethod { local_rsync, rsync_daemon, rsync_ssh, scp };
 
 struct CreateReadyTask {

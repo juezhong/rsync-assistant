@@ -341,6 +341,7 @@ int run_tui(const std::filesystem::path& state_dir,
       std::string task_lines;
       const auto label = [](rsync_assistant::TaskState state) {
         if (state == rsync_assistant::TaskState::ready) return "Ready";
+        if (state == rsync_assistant::TaskState::preflighting) return "Preflighting";
         if (state == rsync_assistant::TaskState::awaiting_execution_confirmation) return "Confirm";
         if (state == rsync_assistant::TaskState::running) return "Running";
         if (state == rsync_assistant::TaskState::paused) return "Paused";
@@ -830,6 +831,7 @@ int main(int argc, char* argv[]) {
       const auto tasks = rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
       const auto state_name = [](rsync_assistant::TaskState state) {
         if (state == rsync_assistant::TaskState::ready) return "ready";
+        if (state == rsync_assistant::TaskState::preflighting) return "preflighting";
         if (state == rsync_assistant::TaskState::awaiting_execution_confirmation) return "awaiting_confirmation";
         if (state == rsync_assistant::TaskState::running) return "running";
         if (state == rsync_assistant::TaskState::paused) return "paused";
