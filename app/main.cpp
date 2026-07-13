@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <exception>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -71,6 +72,31 @@ class TuiSessionLock {
   int descriptor_ = -1;
 };
 
+class DaemonLock {
+ public:
+  explicit DaemonLock(const std::filesystem::path& state_dir)
+      : path_(state_dir / "daemon.lock") {
+    std::filesystem::create_directories(state_dir);
+    descriptor_ = open(path_.c_str(), O_CREAT | O_RDWR, 0600);
+    if (descriptor_ < 0 || flock(descriptor_, LOCK_EX | LOCK_NB) != 0) {
+      if (descriptor_ >= 0) close(descriptor_);
+      descriptor_ = -1;
+      throw std::runtime_error("another rsync-assistant daemon already owns this state directory");
+    }
+  }
+  ~DaemonLock() {
+    if (descriptor_ >= 0) {
+      flock(descriptor_, LOCK_UN);
+      close(descriptor_);
+    }
+  }
+  DaemonLock(const DaemonLock&) = delete;
+  DaemonLock& operator=(const DaemonLock&) = delete;
+ private:
+  std::filesystem::path path_;
+  int descriptor_ = -1;
+};
+
 std::filesystem::path state_directory(int argc, char* argv[]) {
   if (argc >= 3 && std::string_view{argv[argc - 2]} == "--state-dir") return argv[argc - 1];
   return std::filesystem::temp_directory_path() / "rsync-assistant";
@@ -94,6 +120,7 @@ void write_network_rsyncd_template(const std::filesystem::path& path) {
 
 int run_daemon(const std::filesystem::path& state_dir) {
   std::filesystem::create_directories(state_dir);
+  DaemonLock daemon_lock{state_dir};
   const auto daemon_root = state_dir / "managed-rsync-root";
   const auto daemon_config = state_dir / "managed-rsyncd.conf";
   std::filesystem::create_directories(daemon_root);
