@@ -850,6 +850,9 @@ int run_tui(const std::filesystem::path& state_dir,
           if (browse_selected_paths.empty()) {
             if (browse_remote) source = browse_remote_prefix + browse_entries.at(browse_selected).path.string();
             else { status = "Select one or more source entries with Space"; return true; }
+          } else if (browse_selected_paths.size() == 1) {
+            source = (browse_remote ? browse_remote_prefix : "") + *browse_selected_paths.begin();
+            selected_source_paths.clear();
           } else {
             auto root = std::filesystem::path{*browse_selected_paths.begin()}.parent_path();
             for (const auto& selected_path : browse_selected_paths) {
