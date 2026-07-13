@@ -43,6 +43,7 @@ class TaskControlService {
   [[nodiscard]] TransferTask preflight(const std::string& task_id);
   [[nodiscard]] TransferTask execute(const std::string& task_id,
                                      bool delete_confirmed = false);
+  [[nodiscard]] TransferTask execute_scp_fallback(const std::string& task_id);
   [[nodiscard]] TransferTask pause(const std::string& task_id);
   [[nodiscard]] TransferTask resume(const std::string& task_id);
   [[nodiscard]] TransferTask stop(const std::string& task_id);

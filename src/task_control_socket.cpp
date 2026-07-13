@@ -30,6 +30,7 @@ constexpr std::uint32_t kStop = 9;
 constexpr std::uint32_t kAwaitCompletion = 10;
 constexpr std::uint32_t kExecutionLog = 11;
 constexpr std::uint32_t kExecutionLogResponse = 12;
+constexpr std::uint32_t kScpFallback = 13;
 constexpr std::size_t kMaximumPayloadBytes = 1024 * 1024;
 
 struct FrameHeader {
@@ -222,6 +223,8 @@ void TaskControlSocketServer::serve() {
         send_frame(client, kTaskResponse, encode_task(impl_->service.await_completion(payload)));
       } else if (type == kExecutionLog) {
         send_frame(client, kExecutionLogResponse, impl_->service.execution_log(payload));
+      } else if (type == kScpFallback) {
+        send_frame(client, kTaskResponse, encode_task(impl_->service.execute_scp_fallback(payload)));
       } else {
         throw std::runtime_error("unsupported request");
       }
@@ -249,6 +252,15 @@ TransferTask TaskControlSocketClient::execute(const std::string& task_id) const 
   close(descriptor);
   if (type != kTaskResponse) throw std::runtime_error("unexpected execute response");
   return decode_task(payload);
+}
+
+namespace {
+TransferTask request_task(const std::filesystem::path& socket_path, std::uint32_t type,
+                          const std::string& task_id);
+}
+
+TransferTask TaskControlSocketClient::execute_scp_fallback(const std::string& task_id) const {
+  return request_task(socket_path_, kScpFallback, task_id);
 }
 
 void TaskControlSocketServer::stop() {

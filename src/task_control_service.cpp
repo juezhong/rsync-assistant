@@ -217,6 +217,26 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
 }
 
+TransferTask TaskControlService::execute_scp_fallback(const std::string& task_id) {
+  auto tasks = list_tasks();
+  const auto it = std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == task_id; });
+  if (it == tasks.end() || it->state != TaskState::failed)
+    throw std::runtime_error("scp fallback is available only after rsync failure");
+  auto process = ProcessRunner{}.start({RSYNC_ASSISTANT_SCP_PATH, "-r", "--", it->source, it->destination});
+  {
+    std::lock_guard lock{impl_->process_mutex};
+    impl_->processes.emplace(task_id, std::move(process));
+  }
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output='' WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, "running", -1, SQLITE_TRANSIENT), impl_->database, "bind state");
+  const auto command = std::string{RSYNC_ASSISTANT_SCP_PATH} + " -r -- " + it->source + " " + it->destination;
+  check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
+  check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "start scp fallback");
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+}
+
 TransferTask TaskControlService::pause(const std::string& task_id) {
   std::lock_guard lock{impl_->process_mutex};
   auto it = impl_->processes.find(task_id);

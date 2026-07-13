@@ -94,6 +94,7 @@ int run_tui(const std::filesystem::path& state_dir) {
         ftxui::vbox({ftxui::text("Details / shortcuts") | ftxui::bold,
                      ftxui::separator(), ftxui::text("Enter: preflight/execute"),
                      ftxui::text("p: pause/resume  x: stop  w: wait"),
+                     ftxui::text("c: explicit scp fallback after rsync failure"),
                      ftxui::text("n: new task"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
@@ -196,6 +197,11 @@ int run_tui(const std::filesystem::path& state_dir) {
     }
     if (!creating && !tasks.empty() && event == ftxui::Event::Character('w')) {
       try { (void)client.await_completion(tasks.at(selected).id); refresh(); }
+      catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('c')) {
+      try { (void)client.execute_scp_fallback(tasks.at(selected).id); refresh(); }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }

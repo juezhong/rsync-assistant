@@ -33,6 +33,7 @@ class TaskControlSocketClient {
   [[nodiscard]] std::string execution_log(const std::string& task_id) const;
   [[nodiscard]] TransferTask preflight(const std::string& task_id) const;
   [[nodiscard]] TransferTask execute(const std::string& task_id) const;
+  [[nodiscard]] TransferTask execute_scp_fallback(const std::string& task_id) const;
   [[nodiscard]] TransferTask pause(const std::string& task_id) const;
   [[nodiscard]] TransferTask resume(const std::string& task_id) const;
   [[nodiscard]] TransferTask stop(const std::string& task_id) const;
