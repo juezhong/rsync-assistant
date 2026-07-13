@@ -81,6 +81,7 @@ void persist_destination_log(const TransferTask& task) {
   if (!log) return;
   log << "task: " << task.id << '\n'
       << "command: " << task.command << "\n\n"
+      << "exit_status: " << (task.exit_code ? std::to_string(*task.exit_code) : "pending") << "\n\n"
       << task.output;
 }
 
@@ -153,6 +154,9 @@ struct TaskControlService::Impl {
                  nullptr, nullptr, nullptr);
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN include_git_data INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN exit_code INTEGER",
                  nullptr, nullptr, nullptr);
     check_sqlite(sqlite3_exec(database,
                               "UPDATE transfer_tasks SET state='interrupted' "
@@ -260,7 +264,7 @@ TransferTask TaskControlService::create_ready_task(
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, selected_path_count, flatten_selection FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, selected_path_count, flatten_selection, exit_code FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -286,6 +290,7 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
         std::string{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 9))} == "scp" ? TransferMethod::scp : TransferMethod::local_rsync,
         static_cast<std::size_t>(sqlite3_column_int(statement.get(), 10)),
         sqlite3_column_int(statement.get(), 11) != 0,
+        sqlite3_column_type(statement.get(), 12) == SQLITE_NULL ? std::nullopt : std::optional{sqlite3_column_int(statement.get(), 12)},
     });
   }
   return tasks;
@@ -305,11 +310,12 @@ void TaskControlService::reap_completed() {
     }
   }
   for (const auto& [task_id, result] : completed) {
-    Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=? WHERE id=?"};
+    Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=?, exit_code=? WHERE id=?"};
     const auto state = result.exit_code == 0 ? "completed" : "failed";
     check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
     check_sqlite(sqlite3_bind_text(statement.get(), 2, result.output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
-    check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+    check_sqlite(sqlite3_bind_int(statement.get(), 3, result.exit_code), impl_->database, "bind exit code");
+    check_sqlite(sqlite3_bind_text(statement.get(), 4, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
     check_sqlite(sqlite3_step(statement.get()), impl_->database, "reap completed task");
   }
   if (completed.empty()) return;
@@ -320,7 +326,7 @@ void TaskControlService::reap_completed() {
 
 std::string TaskControlService::execution_log(const std::string& task_id) const {
   Statement statement{impl_->database,
-                      "SELECT command, output FROM transfer_tasks WHERE id = ?"};
+                      "SELECT command, output, exit_code FROM transfer_tasks WHERE id = ?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -330,9 +336,11 @@ std::string TaskControlService::execution_log(const std::string& task_id) const 
   const auto* output = sqlite3_column_text(statement.get(), 1);
   const std::string command_text = command == nullptr ? "" : reinterpret_cast<const char*>(command);
   const std::string output_text = output == nullptr ? "" : reinterpret_cast<const char*>(output);
+  const auto exit_text = sqlite3_column_type(statement.get(), 2) == SQLITE_NULL ? "pending" :
+      std::to_string(sqlite3_column_int(statement.get(), 2));
   if (command_text.empty()) return output_text;
   return "Command proposal (reviewed locally):\n" + command_text +
-         "\n\nExecution / preflight output:\n" + output_text;
+         "\n\nExit status: " + exit_text + "\n\nExecution / preflight output:\n" + output_text;
 }
 
 TransferTask TaskControlService::preflight(const std::string& task_id) {
@@ -389,12 +397,13 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto result = it->dry_run ? ProcessRunner{}.run(preflight_arguments) :
                                   ProcessResult{0, "Dry-run disabled by task settings; command is ready for confirmation.\n"};
   const auto state = result.exit_code == 0 ? "awaiting_confirmation" : "failed";
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=? WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output=?, exit_code=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
   const auto output = result.output + (it->delete_extraneous && it->dry_run ? deletion_summary(result.output) : "");
   check_sqlite(sqlite3_bind_text(statement.get(), 3, output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
-  check_sqlite(sqlite3_bind_text(statement.get(), 4, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+  check_sqlite(sqlite3_bind_int(statement.get(), 4, result.exit_code), impl_->database, "bind exit code");
+  check_sqlite(sqlite3_bind_text(statement.get(), 5, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update preflight");
   return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
 }
@@ -460,7 +469,7 @@ TransferTask TaskControlService::execute_scp_fallback(const std::string& task_id
     std::lock_guard lock{impl_->process_mutex};
     impl_->processes.emplace(task_id, std::move(process));
   }
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output='', method='scp' WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, command=?, output='', method='scp', exit_code=NULL WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, "running", -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   const auto command = std::string{RSYNC_ASSISTANT_SCP_PATH} + " -r -- " + it->source + " " + it->destination;
   check_sqlite(sqlite3_bind_text(statement.get(), 2, command.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind command");
@@ -508,7 +517,7 @@ TransferTask TaskControlService::stop(const std::string& task_id) {
   if (it == impl_->processes.end()) throw std::runtime_error("task is not running");
   it->second.stop();
   impl_->processes.erase(it);
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state='cancelled' WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state='cancelled', exit_code=130 WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "cancel task");
   const auto refreshed = list_tasks();
@@ -523,7 +532,7 @@ TransferTask TaskControlService::restart(const std::string& task_id) {
   if (it->method == TransferMethod::scp)
     throw std::runtime_error("scp tasks cannot claim rsync restart or resume behavior");
   Statement statement{impl_->database,
-                      "UPDATE transfer_tasks SET state='ready', command='', output='' WHERE id=?"};
+                      "UPDATE transfer_tasks SET state='ready', command='', output='', exit_code=NULL WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT),
                impl_->database, "bind task id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "restart task");
@@ -541,10 +550,11 @@ TransferTask TaskControlService::await_completion(const std::string& task_id) {
     impl_->processes.erase(it);
   }
   const auto state = result.exit_code == 0 ? "completed" : "failed";
-  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=? WHERE id=?"};
+  Statement statement{impl_->database, "UPDATE transfer_tasks SET state=?, output=?, exit_code=? WHERE id=?"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, state, -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, result.output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind output");
-  check_sqlite(sqlite3_bind_text(statement.get(), 3, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
+  check_sqlite(sqlite3_bind_int(statement.get(), 3, result.exit_code), impl_->database, "bind exit code");
+  check_sqlite(sqlite3_bind_text(statement.get(), 4, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update completion");
   const auto refreshed = list_tasks();
   const auto completed = *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });

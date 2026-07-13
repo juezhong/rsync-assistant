@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,7 @@ struct TransferTask {
   TransferMethod method = TransferMethod::local_rsync;
   std::size_t selected_path_count = 0;
   bool flatten_selection = false;
+  std::optional<int> exit_code;
 };
 
 class TaskControlService {
