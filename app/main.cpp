@@ -119,6 +119,48 @@ void write_network_rsyncd_template(const std::filesystem::path& path) {
   if (!output) throw std::runtime_error("cannot write rsync daemon configuration");
 }
 
+std::string quote_preview(const std::string& value) {
+  if (value.find_first_of(" \t'\"\\$") == std::string::npos) return value;
+  std::string quoted{"'"};
+  for (const char character : value) quoted += character == '\'' ? "'\\''" : std::string(1, character);
+  return quoted + "'";
+}
+
+std::string draft_command_proposal(const std::string& source, const std::string& destination,
+                                   bool delete_extraneous, bool compression,
+                                   bool include_git_data, bool has_selection,
+                                   bool flatten_selection) {
+  if (source.empty() || destination.empty()) return "Complete source and destination to generate a command proposal.";
+  std::vector<std::string> arguments{rsync_assistant::RsyncLocator{}.executable().string(),
+                                     "--recursive", "--links", "--times", "--partial"};
+  if (delete_extraneous) arguments.push_back("--delete");
+  if (compression) arguments.push_back("--compress");
+  const auto endpoint = rsync_assistant::parse_endpoint(source);
+  if (!endpoint.remote) {
+    const auto profile = rsync_assistant::detect_project_profile(endpoint.path);
+    for (const auto& exclusion : profile.exclusions) {
+      arguments.push_back("--exclude");
+      arguments.push_back(exclusion);
+    }
+    if (profile.has_git_repository && !include_git_data) {
+      arguments.push_back("--exclude");
+      arguments.push_back(".git/");
+    }
+  }
+  if (has_selection) {
+    arguments.push_back("--from0");
+    arguments.push_back("--files-from=<assistant-managed-selection-manifest>");
+    if (flatten_selection) arguments.push_back("--no-relative");
+  }
+  arguments.insert(arguments.end(), {"--", source, destination});
+  std::string result;
+  for (const auto& argument : arguments) {
+    if (!result.empty()) result += ' ';
+    result += quote_preview(argument);
+  }
+  return result;
+}
+
 int run_daemon(const std::filesystem::path& state_dir) {
   std::filesystem::create_directories(state_dir);
   DaemonLock daemon_lock{state_dir};
@@ -408,6 +450,9 @@ int run_tui(const std::filesystem::path& state_dir,
                   ftxui::text(std::string{"Deletion: "} + (delete_extraneous ? "enabled" : "disabled")),
                   ftxui::text(selected_source_paths.empty() ? "Selection: whole source" :
                               "Selection: " + std::to_string(selected_source_paths.size()) + " entries (" + (flatten_selection ? "flatten" : "preserve paths") + ")"),
+                  ftxui::separator(), ftxui::text("Command proposal:"),
+                  ftxui::paragraph(draft_command_proposal(source, destination, delete_extraneous, compression, include_git_data,
+                                                          !selected_source_paths.empty(), flatten_selection)),
                   ftxui::separator(), ftxui::text("Enter: create Ready Task  F4: previous  Esc: cancel")};
     }
     return ftxui::dbox({dashboard | ftxui::dim,
