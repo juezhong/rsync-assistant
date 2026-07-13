@@ -851,7 +851,17 @@ int run_tui(const std::filesystem::path& state_dir,
             if (browse_remote) source = browse_remote_prefix + browse_entries.at(browse_selected).path.string();
             else { status = "Select one or more source entries with Space"; return true; }
           } else {
-            const auto root = browse_remote ? browse_remote_directory : browse_root;
+            auto root = std::filesystem::path{*browse_selected_paths.begin()}.parent_path();
+            for (const auto& selected_path : browse_selected_paths) {
+              const auto path = std::filesystem::path{selected_path};
+              while (!root.empty()) {
+                std::error_code error;
+                const auto relative = std::filesystem::relative(path, root, error);
+                if (!error && !relative.empty() && !relative.is_absolute() && !relative.generic_string().starts_with("..")) break;
+                root = root.parent_path();
+              }
+            }
+            if (root.empty()) { status = "Selected source paths have no common root"; return true; }
             source = (browse_remote ? browse_remote_prefix : "") + root.string() + "/";
             selected_source_paths.clear();
             for (const auto& selected_path : browse_selected_paths) {
