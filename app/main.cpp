@@ -9,10 +9,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <signal.h>
 #include <string>
 #include <string_view>
-#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 
@@ -267,22 +265,18 @@ int main(int argc, char* argv[]) {
     if (mode == "daemon") return run_daemon(state_dir);
     if (mode == "tui") return run_tui(state_dir);
 
-    pid_t started_daemon = -1;
     try {
       (void)rsync_assistant::TaskControlSocketClient{state_dir / "control.sock"}.list_tasks();
     } catch (...) {
       const pid_t child = fork();
-      if (child == 0) _exit(run_daemon(state_dir));
+      if (child == 0) {
+        setsid();
+        _exit(run_daemon(state_dir));
+      }
       if (child < 0) throw std::runtime_error("cannot start daemon");
-      started_daemon = child;
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    const auto result = run_tui(state_dir);
-    if (started_daemon > 0) {
-      kill(started_daemon, SIGTERM);
-      waitpid(started_daemon, nullptr, 0);
-    }
-    return result;
+    return run_tui(state_dir);
   } catch (const std::exception& error) {
     std::cerr << "rsync-assistant: " << error.what() << '\n';
     return 1;
