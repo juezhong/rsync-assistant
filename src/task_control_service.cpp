@@ -176,8 +176,10 @@ TransferTask TaskControlService::create_ready_task(
   const auto id = next_task_id();
   const auto source_endpoint = parse_endpoint(request.source);
   const auto destination_endpoint = parse_endpoint(request.destination);
-  const auto method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
-                      (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
+  const std::string method = (source_endpoint.rsync_daemon || destination_endpoint.rsync_daemon) ? "rsync_daemon" :
+                             (source_endpoint.remote || destination_endpoint.remote) ? "rsync_ssh" : "local_rsync";
+  const auto task_method = method == "rsync_daemon" ? TransferMethod::rsync_daemon :
+                           method == "rsync_ssh" ? TransferMethod::rsync_ssh : TransferMethod::local_rsync;
   std::filesystem::path manifest_path;
   if (!request.selected_relative_paths.empty()) {
     if (source_endpoint.remote)
@@ -199,9 +201,31 @@ TransferTask TaskControlService::create_ready_task(
     file.write(data.data(), static_cast<std::streamsize>(data.size()));
     if (!file) throw std::runtime_error("cannot write selection manifest");
   }
+  const auto rsync = RsyncLocator{}.executable().string();
+  std::vector<std::string> proposal{rsync, "--recursive", "--links", "--times", "--partial"};
+  if (request.delete_extraneous) proposal.push_back("--delete");
+  if (request.compression) proposal.push_back("--compress");
+  if (!source_endpoint.remote) {
+    const auto profile = detect_project_profile(source_endpoint.path);
+    for (const auto& exclusion : profile.exclusions) {
+      proposal.push_back("--exclude");
+      proposal.push_back(exclusion);
+    }
+    if (profile.has_git_repository && !request.include_git_data) {
+      proposal.push_back("--exclude");
+      proposal.push_back(".git/");
+    }
+  }
+  if (!manifest_path.empty()) {
+    proposal.push_back("--from0");
+    proposal.push_back("--files-from=" + manifest_path.string());
+    if (request.flatten_selection) proposal.push_back("--no-relative");
+  }
+  proposal.insert(proposal.end(), {"--", request.source, request.destination});
+  const auto command = render_command(proposal);
   Statement statement{impl_->database,
                       "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression, dry_run, method, trusted_daemon, selection_manifest, selected_path_count, flatten_selection, include_git_data) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
+                      "VALUES (?, ?, ?, 'ready', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -211,23 +235,25 @@ TransferTask TaskControlService::create_ready_task(
   check_sqlite(sqlite3_bind_text(statement.get(), 3, request.destination.c_str(),
                                  -1, SQLITE_TRANSIENT),
                impl_->database, "bind destination");
-  check_sqlite(sqlite3_bind_int(statement.get(), 4, request.delete_extraneous),
+  check_sqlite(sqlite3_bind_text(statement.get(), 4, command.c_str(), -1, SQLITE_TRANSIENT),
+               impl_->database, "bind command proposal");
+  check_sqlite(sqlite3_bind_int(statement.get(), 5, request.delete_extraneous),
                impl_->database, "bind delete option");
-  check_sqlite(sqlite3_bind_int(statement.get(), 5, request.compression),
+  check_sqlite(sqlite3_bind_int(statement.get(), 6, request.compression),
                impl_->database, "bind compression option");
-  check_sqlite(sqlite3_bind_int(statement.get(), 6, request.dry_run),
+  check_sqlite(sqlite3_bind_int(statement.get(), 7, request.dry_run),
                impl_->database, "bind dry-run option");
-  check_sqlite(sqlite3_bind_text(statement.get(), 7, method, -1, SQLITE_TRANSIENT),
+  check_sqlite(sqlite3_bind_text(statement.get(), 8, method.c_str(), -1, SQLITE_TRANSIENT),
                impl_->database, "bind transfer method");
-  check_sqlite(sqlite3_bind_int(statement.get(), 8, request.trusted_daemon),
+  check_sqlite(sqlite3_bind_int(statement.get(), 9, request.trusted_daemon),
                impl_->database, "bind trusted daemon");
   const auto manifest_text = manifest_path.string();
-  check_sqlite(sqlite3_bind_text(statement.get(), 9, manifest_text.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind selection manifest");
-  check_sqlite(sqlite3_bind_int(statement.get(), 10, static_cast<int>(request.selected_relative_paths.size())), impl_->database, "bind selection count");
-  check_sqlite(sqlite3_bind_int(statement.get(), 11, request.flatten_selection), impl_->database, "bind flatten selection");
-  check_sqlite(sqlite3_bind_int(statement.get(), 12, request.include_git_data), impl_->database, "bind git inclusion");
+  check_sqlite(sqlite3_bind_text(statement.get(), 10, manifest_text.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind selection manifest");
+  check_sqlite(sqlite3_bind_int(statement.get(), 11, static_cast<int>(request.selected_relative_paths.size())), impl_->database, "bind selection count");
+  check_sqlite(sqlite3_bind_int(statement.get(), 12, request.flatten_selection), impl_->database, "bind flatten selection");
+  check_sqlite(sqlite3_bind_int(statement.get(), 13, request.include_git_data), impl_->database, "bind git inclusion");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
-  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression, request.dry_run, TransferMethod::local_rsync, request.selected_relative_paths.size(), request.flatten_selection};
+  return {id, request.source, request.destination, TaskState::ready, command, "", request.delete_extraneous, request.compression, request.dry_run, task_method, request.selected_relative_paths.size(), request.flatten_selection};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
