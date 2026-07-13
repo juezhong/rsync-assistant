@@ -398,6 +398,7 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
     check_sqlite(sqlite3_bind_text(state_update.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind task id");
     check_sqlite(sqlite3_step(state_update.get()), impl_->database, "start preflight");
   }
+  try {
   const auto source_endpoint = parse_endpoint(it->source);
   const auto destination_endpoint = parse_endpoint(it->destination);
   std::string effective_destination = it->destination;
@@ -498,7 +499,18 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   check_sqlite(sqlite3_bind_text(statement.get(), 6, effective_destination.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind effective destination");
   check_sqlite(sqlite3_bind_text(statement.get(), 7, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update preflight");
-  return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
+  const auto refreshed = list_tasks();
+  const auto refreshed_task = std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+  if (refreshed_task == refreshed.end()) throw std::runtime_error("task disappeared after preflight");
+  return *refreshed_task;
+  } catch (const std::exception& error) {
+    Statement failed{impl_->database, "UPDATE transfer_tasks SET state='failed', output=?, exit_code=1 WHERE id=?"};
+    const auto output = std::string{"Preflight failed before execution:\n"} + error.what() + '\n';
+    check_sqlite(sqlite3_bind_text(failed.get(), 1, output.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind preflight failure output");
+    check_sqlite(sqlite3_bind_text(failed.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind preflight failure id");
+    check_sqlite(sqlite3_step(failed.get()), impl_->database, "record preflight failure");
+    throw;
+  }
 }
 
 TransferTask TaskControlService::execute(const std::string& task_id, bool delete_confirmed) {
@@ -553,7 +565,10 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   check_sqlite(sqlite3_bind_text(statement.get(), 1, "running", -1, SQLITE_TRANSIENT), impl_->database, "bind state");
   check_sqlite(sqlite3_bind_text(statement.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT), impl_->database, "bind id");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "update execution");
-  return list_tasks().at(static_cast<std::size_t>(std::distance(tasks.begin(), it)));
+  const auto refreshed = list_tasks();
+  const auto refreshed_task = std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+  if (refreshed_task == refreshed.end()) throw std::runtime_error("task disappeared after execution start");
+  return *refreshed_task;
 }
 
 TransferTask TaskControlService::execute_scp_fallback(const std::string& task_id) {

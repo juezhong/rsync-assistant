@@ -163,6 +163,11 @@ std::string draft_command_proposal(const std::string& source, const std::string&
   return result;
 }
 
+int clamp_selection(int selection, std::size_t count) {
+  if (count == 0) return 0;
+  return std::clamp(selection, 0, static_cast<int>(count) - 1);
+}
+
 bool valid_benchmark_token(std::string_view token) {
   return !token.empty() && token.size() <= 80 && std::all_of(token.begin(), token.end(), [](unsigned char character) {
     return std::isalnum(character) || character == '-' || character == '_';
@@ -296,7 +301,23 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto form = ftxui::Container::Vertical({source_input, destination_input, ssh_destination_input, dry_run_checkbox, compression_checkbox, delete_checkbox, trusted_daemon_checkbox, include_git_checkbox, include_project_ignored_checkbox, browse_search_input, delete_confirmation_input, settings_dry_run, settings_compression, settings_benchmark, settings_benchmark_size_input, settings_benchmark_timeout_input, settings_benchmark_cache_input, settings_benchmark_threshold_input, settings_ai_enabled, settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto endpoint_form = ftxui::Container::Vertical({source_input, destination_input, ssh_destination_input});
+  auto option_form = ftxui::Container::Vertical({dry_run_checkbox, compression_checkbox, delete_checkbox,
+                                                   trusted_daemon_checkbox, include_git_checkbox,
+                                                   include_project_ignored_checkbox});
+  auto delete_form = ftxui::Container::Vertical({delete_confirmation_input});
+  auto scp_form = ftxui::Container::Vertical({scp_confirmation_input});
+  auto settings_form = ftxui::Container::Vertical({settings_dry_run, settings_compression,
+                                                    settings_benchmark, settings_benchmark_size_input,
+                                                    settings_benchmark_timeout_input, settings_benchmark_cache_input,
+                                                    settings_benchmark_threshold_input, settings_ai_enabled,
+                                                    settings_ai_endpoint, settings_ai_model, settings_api_key});
+  auto inactive_form = ftxui::Renderer([] { return ftxui::text(""); });
+  auto review_form = ftxui::Renderer([] { return ftxui::text(""); });
+  // Only the controls rendered by the active modal participate in focus navigation.
+  int active_form = 0;
+  auto form = ftxui::Container::Tab({inactive_form, endpoint_form, option_form, review_form,
+                                     delete_form, scp_form, settings_form}, &active_form);
   auto scan_browser = [&] {
     if (browse_scanning) return;
     const auto directory = browse_directory;
@@ -338,7 +359,7 @@ int run_tui(const std::filesystem::path& state_dir,
       auto [generation, entries] = browse_scan.get();
       if (generation == browse_scan_generation) {
         browse_entries = std::move(entries);
-        if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
+        browse_selected = clamp_selection(browse_selected, browse_entries.size());
       }
     } catch (const std::exception& error) { status = error.what(); }
     browse_scanning = false;
@@ -346,7 +367,7 @@ int run_tui(const std::filesystem::path& state_dir,
   auto refresh = [&] {
     try {
       tasks = client.list_tasks();
-      if (selected >= static_cast<int>(tasks.size())) selected = 0;
+      selected = clamp_selection(selected, tasks.size());
       selected_log = tasks.empty() ? "No selected task" : client.execution_log(tasks.at(selected).id);
       std::string task_lines;
       const auto label = [](rsync_assistant::TaskState state) {
@@ -480,15 +501,16 @@ int run_tui(const std::filesystem::path& state_dir,
                             ftxui::center});
   });
   root = ftxui::CatchEvent(root, [&](ftxui::Event event) {
-    if (event == ftxui::Event::Character('q')) {
+    const bool dashboard_active = !creating && !settings_open && !delete_confirming && !scp_confirming;
+    if (dashboard_active && event == ftxui::Event::Character('q')) {
       screen.ExitLoopClosure()();
       return true;
     }
-    if (event == ftxui::Event::Character('r')) {
+    if (dashboard_active && event == ftxui::Event::Character('r')) {
       refresh();
       return true;
     }
-    if (!creating && event == ftxui::Event::Character('d')) {
+    if (dashboard_active && event == ftxui::Event::Character('d')) {
       try {
         const auto path = state_dir / "rsyncd-deployment.conf";
         write_network_rsyncd_template(path);
@@ -496,7 +518,7 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('R')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('R')) {
       try {
         const auto source_endpoint = rsync_assistant::parse_endpoint(tasks.at(selected).source);
         const auto destination_endpoint = rsync_assistant::parse_endpoint(tasks.at(selected).destination);
@@ -511,9 +533,10 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { remote_task_status = error.what(); }
       return true;
     }
-    if (event == ftxui::Event::Character('n')) {
+    if (dashboard_active && event == ftxui::Event::Character('n')) {
       creating = true;
       wizard_step = 0;
+      active_form = 1;
       source.clear();
       destination.clear();
       selected_source_paths.clear();
@@ -528,7 +551,7 @@ int run_tui(const std::filesystem::path& state_dir,
       include_project_ignored = false;
       return true;
     }
-    if (!creating && event == ftxui::Event::Character('s')) { settings_open = true; return true; }
+    if (dashboard_active && event == ftxui::Event::Character('s')) { settings_open = true; active_form = 6; return true; }
     if (settings_open && event == ftxui::Event::CtrlS) {
       try {
         settings.benchmark_size_mib = static_cast<unsigned>(std::stoul(settings_benchmark_size));
@@ -540,15 +563,16 @@ int run_tui(const std::filesystem::path& state_dir,
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (settings_open && event == ftxui::Event::Escape) { settings_open = false; return true; }
+    if (settings_open && event == ftxui::Event::Escape) { settings_open = false; active_form = 0; return true; }
     if (event == ftxui::Event::Escape && (delete_confirming || scp_confirming)) {
       delete_confirming = false;
       delete_confirmation.clear();
       scp_confirming = false;
       scp_confirmation.clear();
+      active_form = creating ? wizard_step + 1 : 0;
       return true;
     }
-    if (creating && wizard_step == 0 && event == ftxui::Event::F2) {
+    if (creating && !browsing && wizard_step == 0 && event == ftxui::Event::F2) {
       browse_destination = false;
       const auto endpoint = rsync_assistant::parse_endpoint(source);
       browse_selected = 0;
@@ -577,10 +601,11 @@ int run_tui(const std::filesystem::path& state_dir,
           scan_browser();
         }
         browsing = true;
+        active_form = 0;
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (creating && wizard_step == 0 && event == ftxui::Event::F3) {
+    if (creating && !browsing && wizard_step == 0 && event == ftxui::Event::F3) {
       browse_destination = true;
       const auto endpoint = rsync_assistant::parse_endpoint(destination);
       browse_selected = 0;
@@ -603,6 +628,7 @@ int run_tui(const std::filesystem::path& state_dir,
           scan_browser();
         }
         browsing = true;
+        active_form = 0;
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
@@ -613,7 +639,7 @@ int run_tui(const std::filesystem::path& state_dir,
         if (browse_search_input->OnEvent(event)) { scan_browser(); return true; }
         return true;
       }
-      if (event == ftxui::Event::Escape) { browsing = false; return true; }
+      if (event == ftxui::Event::Escape) { browsing = false; active_form = wizard_step + 1; return true; }
       if (!browse_remote && event == ftxui::Event::Character('/')) { browse_search = true; browse_query.clear(); return true; }
       if (event == ftxui::Event::Character('g')) { browse_hidden = !browse_hidden; browse_selected = 0; scan_browser(); return true; }
       if (event == ftxui::Event::Character('i')) { browse_include_ignored = !browse_include_ignored; browse_selected = 0; scan_browser(); return true; }
@@ -685,16 +711,19 @@ int run_tui(const std::filesystem::path& state_dir,
         else source = selected_path;
         }
         browsing = false;
+        active_form = wizard_step + 1;
         return true;
       }
       return true;
     }
     if (event == ftxui::Event::Escape && creating && !browsing) {
       creating = false;
+      active_form = 0;
       return true;
     }
     if (creating && !browsing && event == ftxui::Event::F4 && wizard_step > 0) {
       --wizard_step;
+      active_form = wizard_step + 1;
       return true;
     }
     if (event == ftxui::Event::Return) {
@@ -704,6 +733,7 @@ int run_tui(const std::filesystem::path& state_dir,
           (void)client.execute(tasks.at(selected).id, true);
           delete_confirmation.clear();
           delete_confirming = false;
+          active_form = 0;
           refresh();
           return true;
         }
@@ -712,6 +742,7 @@ int run_tui(const std::filesystem::path& state_dir,
           (void)client.execute_scp_fallback(tasks.at(selected).id);
           scp_confirmation.clear();
           scp_confirming = false;
+          active_form = 0;
           refresh();
           return true;
         }
@@ -726,10 +757,12 @@ int run_tui(const std::filesystem::path& state_dir,
             include_git_data = false;
             include_project_ignored = false;
             ++wizard_step;
+            active_form = wizard_step + 1;
             return true;
           }
           if (wizard_step == 1) {
             ++wizard_step;
+            active_form = wizard_step + 1;
             return true;
           }
           (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, ssh_destination, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
@@ -748,6 +781,7 @@ int run_tui(const std::filesystem::path& state_dir,
           flatten_selection = false;
           creating = false;
           wizard_step = 0;
+          active_form = 0;
           refresh();
         } else if (!tasks.empty()) {
           const auto& task = tasks.at(selected);
@@ -755,6 +789,7 @@ int run_tui(const std::filesystem::path& state_dir,
           if (task.state == rsync_assistant::TaskState::awaiting_execution_confirmation) {
             if (task.delete_extraneous) delete_confirming = true;
             else (void)client.execute(task.id);
+            if (delete_confirming) active_form = 4;
           }
           refresh();
         }
@@ -763,7 +798,7 @@ int run_tui(const std::filesystem::path& state_dir,
       }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('p')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('p')) {
       try {
         const auto& task = tasks.at(selected);
         if (task.method == rsync_assistant::TransferMethod::scp)
@@ -774,17 +809,17 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('x')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('x')) {
       try { (void)client.stop(tasks.at(selected).id); refresh(); }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('w')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('w')) {
       try { (void)client.await_completion(tasks.at(selected).id); refresh(); }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('e')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('e')) {
       try {
         if (tasks.at(selected).method == rsync_assistant::TransferMethod::scp)
           throw std::runtime_error("scp tasks cannot claim rsync restart/resume behavior");
@@ -793,21 +828,22 @@ int run_tui(const std::filesystem::path& state_dir,
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && !tasks.empty() && event == ftxui::Event::Character('c')) {
+    if (dashboard_active && !tasks.empty() && event == ftxui::Event::Character('c')) {
       try {
         if (tasks.at(selected).state != rsync_assistant::TaskState::failed)
           throw std::runtime_error("scp fallback is available only after rsync failure");
         scp_confirming = true;
+        active_form = 5;
       }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (!creating && event == ftxui::Event::ArrowDown && selected + 1 < static_cast<int>(tasks.size())) {
+    if (dashboard_active && event == ftxui::Event::ArrowDown && selected + 1 < static_cast<int>(tasks.size())) {
       ++selected;
       refresh();
       return true;
     }
-    if (!creating && event == ftxui::Event::ArrowUp && selected > 0) {
+    if (dashboard_active && event == ftxui::Event::ArrowUp && selected > 0) {
       --selected;
       refresh();
       return true;
