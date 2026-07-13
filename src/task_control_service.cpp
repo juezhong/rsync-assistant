@@ -70,7 +70,7 @@ struct TaskControlService::Impl {
                               "id TEXT PRIMARY KEY, source TEXT NOT NULL, "
                               "destination TEXT NOT NULL, state TEXT NOT NULL, "
                               "command TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', "
-                              "delete_extraneous INTEGER NOT NULL DEFAULT 0)",
+                              "delete_extraneous INTEGER NOT NULL DEFAULT 0, compression INTEGER NOT NULL DEFAULT 0)",
                               nullptr, nullptr, nullptr),
                  database, "create transfer_tasks table");
     char* migration_error = nullptr;
@@ -79,6 +79,9 @@ struct TaskControlService::Impl {
         "ALTER TABLE transfer_tasks ADD COLUMN delete_extraneous INTEGER NOT NULL DEFAULT 0",
         nullptr, nullptr, &migration_error);
     if (migration != SQLITE_OK) sqlite3_free(migration_error);
+    sqlite3_exec(database,
+                 "ALTER TABLE transfer_tasks ADD COLUMN compression INTEGER NOT NULL DEFAULT 0",
+                 nullptr, nullptr, nullptr);
   }
 
   ~Impl() { sqlite3_close(database); }
@@ -93,8 +96,8 @@ TransferTask TaskControlService::create_ready_task(
     const CreateReadyTask& request) {
   const auto id = next_task_id();
   Statement statement{impl_->database,
-                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous) "
-                      "VALUES (?, ?, ?, 'ready', '', '', ?)"};
+                      "INSERT INTO transfer_tasks (id, source, destination, state, command, output, delete_extraneous, compression) "
+                      "VALUES (?, ?, ?, 'ready', '', '', ?, ?)"};
   check_sqlite(sqlite3_bind_text(statement.get(), 1, id.c_str(), -1,
                                  SQLITE_TRANSIENT),
                impl_->database, "bind task id");
@@ -106,13 +109,15 @@ TransferTask TaskControlService::create_ready_task(
                impl_->database, "bind destination");
   check_sqlite(sqlite3_bind_int(statement.get(), 4, request.delete_extraneous),
                impl_->database, "bind delete option");
+  check_sqlite(sqlite3_bind_int(statement.get(), 5, request.compression),
+               impl_->database, "bind compression option");
   check_sqlite(sqlite3_step(statement.get()), impl_->database, "insert task");
-  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous};
+  return {id, request.source, request.destination, TaskState::ready, "", "", request.delete_extraneous, request.compression};
 }
 
 std::vector<TransferTask> TaskControlService::list_tasks() const {
   Statement statement{impl_->database,
-                      "SELECT id, source, destination, state, command, output, delete_extraneous FROM transfer_tasks ORDER BY rowid"};
+                      "SELECT id, source, destination, state, command, output, delete_extraneous, compression FROM transfer_tasks ORDER BY rowid"};
   std::vector<TransferTask> tasks;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     const std::string state{reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3))};
@@ -130,6 +135,7 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 4)),
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 5)),
         sqlite3_column_int(statement.get(), 6) != 0,
+        sqlite3_column_int(statement.get(), 7) != 0,
     });
   }
   return tasks;
@@ -159,6 +165,7 @@ TransferTask TaskControlService::preflight(const std::string& task_id) {
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial", "--dry-run"};
   if (it->delete_extraneous) arguments.push_back("--delete");
+  if (it->compression) arguments.push_back("--compress");
   if (!source_endpoint.remote) {
     for (const auto& exclusion : detect_project_profile(source_endpoint.path).exclusions) {
       arguments.push_back("--exclude");
@@ -189,6 +196,7 @@ TransferTask TaskControlService::execute(const std::string& task_id, bool delete
   const auto rsync = RsyncLocator{}.executable().string();
   std::vector<std::string> arguments{rsync, "--recursive", "--links", "--times", "--partial"};
   if (it->delete_extraneous) arguments.push_back("--delete");
+  if (it->compression) arguments.push_back("--compress");
   const auto local_source = parse_endpoint(it->source);
   if (!local_source.remote) {
     for (const auto& exclusion : detect_project_profile(local_source.path).exclusions) {

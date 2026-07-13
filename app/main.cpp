@@ -41,6 +41,7 @@ int run_tui(const std::filesystem::path& state_dir) {
   std::string source;
   std::string destination;
   bool delete_extraneous = false;
+  bool compression = false;
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
   std::vector<rsync_assistant::PathEntry> browse_entries;
@@ -49,7 +50,8 @@ int run_tui(const std::filesystem::path& state_dir) {
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
-  auto form = ftxui::Container::Vertical({source_input, destination_input, delete_checkbox});
+  auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
+  auto form = ftxui::Container::Vertical({source_input, destination_input, compression_checkbox, delete_checkbox});
   auto scan_browser = [&] {
     browse_entries = rsync_assistant::scan_directory_level(browse_directory, browse_hidden);
     if (browse_selected >= static_cast<int>(browse_entries.size())) browse_selected = 0;
@@ -111,6 +113,7 @@ int run_tui(const std::filesystem::path& state_dir) {
                         ftxui::window(ftxui::text("New task"),
                                       ftxui::vbox({source_input->Render(),
                                                    destination_input->Render(),
+                                                   compression_checkbox->Render(),
                                                    delete_checkbox->Render(),
                                                    ftxui::separator(),
                                                    ftxui::text("Enter: create  Esc: cancel")})) |
@@ -159,10 +162,11 @@ int run_tui(const std::filesystem::path& state_dir) {
     if (event == ftxui::Event::Return) {
       try {
         if (creating) {
-          (void)client.create_ready_task({source, destination, delete_extraneous});
+          (void)client.create_ready_task({source, destination, delete_extraneous, compression});
           source.clear();
           destination.clear();
           delete_extraneous = false;
+          compression = false;
           creating = false;
           refresh();
         } else if (!tasks.empty()) {

@@ -13,6 +13,7 @@ struct CreateReadyTask {
   std::string source;
   std::string destination;
   bool delete_extraneous = false;
+  bool compression = false;
 };
 
 struct TransferTask {
@@ -23,6 +24,7 @@ struct TransferTask {
   std::string command;
   std::string output;
   bool delete_extraneous = false;
+  bool compression = false;
 };
 
 class TaskControlService {

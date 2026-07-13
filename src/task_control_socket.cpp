@@ -81,11 +81,14 @@ std::pair<std::uint32_t, std::string> receive_frame(int descriptor) {
 CreateReadyTask decode_request(const std::string& payload) {
   const auto first = payload.find('\0');
   const auto second = first == std::string::npos ? first : payload.find('\0', first + 1);
+  const auto third = second == std::string::npos ? second : payload.find('\0', second + 1);
   if (first == std::string::npos) throw std::runtime_error("invalid task request");
   const auto destination = payload.substr(first + 1,
       second == std::string::npos ? std::string::npos : second - first - 1);
   return {payload.substr(0, first), destination,
-          second != std::string::npos && payload.substr(second + 1) == "1"};
+          second != std::string::npos && payload.substr(second + 1,
+              third == std::string::npos ? std::string::npos : third - second - 1) == "1",
+          third != std::string::npos && payload.substr(third + 1) == "1"};
 }
 
 std::string encode_task(const TransferTask& task) {
@@ -262,7 +265,8 @@ TransferTask TaskControlSocketClient::create_ready_task(
   try {
     send_frame(descriptor, kCreateReadyTask,
                request.source + '\0' + request.destination + '\0' +
-                   (request.delete_extraneous ? "1" : "0"));
+                   (request.delete_extraneous ? "1" : "0") + '\0' +
+                   (request.compression ? "1" : "0"));
     const auto [type, payload] = receive_frame(descriptor);
     close(descriptor);
     if (type != kTaskResponse) throw std::runtime_error("unexpected task response");
