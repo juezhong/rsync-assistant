@@ -240,9 +240,9 @@ int run_tui(const std::filesystem::path& state_dir,
   int wizard_step = 0;
   std::string source;
   std::string destination;
-  std::string ssh_destination;
   std::vector<std::string> selected_source_paths;
   bool flatten_selection = false;
+  bool copy_source_contents = false;
   bool delete_extraneous = false;
   bool compression = settings.compression;
   bool dry_run = settings.dry_run;
@@ -255,6 +255,7 @@ int run_tui(const std::filesystem::path& state_dir,
   std::string delete_confirmation;
   bool scp_confirming = false;
   bool settings_open = false;
+  bool help_open = false;
   std::string scp_confirmation;
   bool browsing = false;
   std::filesystem::path browse_directory = std::filesystem::current_path();
@@ -273,17 +274,22 @@ int run_tui(const std::filesystem::path& state_dir,
   std::unordered_set<std::string> browse_selected_paths;
   std::string browse_remote_prefix;
   std::string browse_remote_host;
+  std::string browse_manual_host;
+  std::string browse_manual_path;
+  std::vector<std::string> browse_ssh_hosts;
   std::filesystem::path browse_remote_directory;
   auto source_input = ftxui::Input(&source, "Source path");
   auto destination_input = ftxui::Input(&destination, "Destination path");
-  auto ssh_destination_input = ftxui::Input(&ssh_destination, "Paired SSH destination (optional)");
   auto delete_checkbox = ftxui::Checkbox("Delete destination-only files (--delete)", &delete_extraneous);
   auto compression_checkbox = ftxui::Checkbox("Compress transfer (--compress)", &compression);
   auto dry_run_checkbox = ftxui::Checkbox("Dry-run before execution", &dry_run);
   auto trusted_daemon_checkbox = ftxui::Checkbox("Trust direct rsync daemon on LAN", &trusted_daemon);
+  auto copy_source_contents_checkbox = ftxui::Checkbox("Copy directory contents only (project/ -> destination/...)", &copy_source_contents);
   auto include_git_checkbox = ftxui::Checkbox("Include repository data (.git)", &include_git_data);
   auto include_project_ignored_checkbox = ftxui::Checkbox("Include detected build/dependency paths", &include_project_ignored);
   auto browse_search_input = ftxui::Input(&browse_query, "Search paths");
+  auto browse_manual_host_input = ftxui::Input(&browse_manual_host, "Host or user@host");
+  auto browse_manual_path_input = ftxui::Input(&browse_manual_path, "Absolute remote path (optional)");
   auto delete_confirmation_input = ftxui::Input(&delete_confirmation, "Type DELETE");
   auto scp_confirmation_input = ftxui::Input(&scp_confirmation, "Type SCP");
   auto settings_dry_run = ftxui::Checkbox("Default dry-run", &settings.dry_run);
@@ -301,8 +307,9 @@ int run_tui(const std::filesystem::path& state_dir,
   auto settings_ai_endpoint = ftxui::Input(&settings.ai_endpoint, "AI endpoint");
   auto settings_ai_model = ftxui::Input(&settings.ai_model, "AI model");
   auto settings_api_key = ftxui::Input(&settings.api_key, "API key");
-  auto endpoint_form = ftxui::Container::Vertical({source_input, destination_input, ssh_destination_input});
-  auto option_form = ftxui::Container::Vertical({dry_run_checkbox, compression_checkbox, delete_checkbox,
+  auto source_form = ftxui::Container::Vertical({source_input});
+  auto destination_form = ftxui::Container::Vertical({destination_input});
+  auto option_form = ftxui::Container::Vertical({copy_source_contents_checkbox, dry_run_checkbox, compression_checkbox, delete_checkbox,
                                                    trusted_daemon_checkbox, include_git_checkbox,
                                                    include_project_ignored_checkbox});
   auto delete_form = ftxui::Container::Vertical({delete_confirmation_input});
@@ -316,8 +323,8 @@ int run_tui(const std::filesystem::path& state_dir,
   auto review_form = ftxui::Renderer([] { return ftxui::text(""); });
   // Only the controls rendered by the active modal participate in focus navigation.
   int active_form = 0;
-  auto form = ftxui::Container::Tab({inactive_form, endpoint_form, option_form, review_form,
-                                     delete_form, scp_form, settings_form}, &active_form);
+  auto form = ftxui::Container::Tab({inactive_form, source_form, destination_form, option_form,
+                                     review_form, delete_form, scp_form, settings_form}, &active_form);
   auto scan_browser = [&] {
     if (browse_scanning) return;
     const auto directory = browse_directory;
@@ -412,16 +419,36 @@ int run_tui(const std::filesystem::path& state_dir,
                      ftxui::separator(), ftxui::text("Program log"),
                      ftxui::text("Daemon connected through local socket")}) |
             ftxui::border | ftxui::flex,
-        ftxui::vbox({ftxui::text("Details / shortcuts") | ftxui::bold,
-                     ftxui::separator(), ftxui::text("Enter: preflight/execute"),
-                     ftxui::text("p: pause/resume  x: stop  w: wait"),
-                     ftxui::text("e: re-prepare interrupted/failed rsync task"),
-                     ftxui::text("c: explicit scp fallback after rsync failure"),
-                     ftxui::text("n: new task  s: settings  d: daemon deployment guide"),
-                     ftxui::text("R: remote assistant status"),
-                     ftxui::paragraph(remote_task_status), ftxui::text("?: help")}) |
+        ftxui::vbox({ftxui::text("Details") | ftxui::bold,
+                     ftxui::separator(), ftxui::text("Task actions") | ftxui::bold,
+                     ftxui::text("Enter  preflight / execute"),
+                     ftxui::text("P      pause / resume"),
+                     ftxui::text("X      stop"),
+                     ftxui::text("W      wait for completion"),
+                     ftxui::text("E      re-prepare failed task"),
+                     ftxui::text("C      use scp after rsync failure"),
+                     ftxui::separator(), ftxui::text("Navigation") | ftxui::bold,
+                     ftxui::text("N      new task"),
+                     ftxui::text("S      settings"),
+                     ftxui::text("D      daemon deployment guide"),
+                     ftxui::text("R      remote task status"),
+                     ftxui::text("?      complete shortcut help"),
+                     ftxui::separator(), ftxui::paragraph(remote_task_status)}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
     });
+    if (help_open) {
+      return ftxui::dbox({dashboard | ftxui::dim,
+                          ftxui::window(ftxui::text("Keyboard shortcuts"),
+                                        ftxui::vbox({ftxui::text("Dashboard" ) | ftxui::bold,
+                                                     ftxui::text("Enter preflight/execute   P pause/resume   X stop   W wait"),
+                                                     ftxui::text("E re-prepare   C scp fallback   N new task   S settings"),
+                                                     ftxui::text("D deployment guide   R remote task status   Q quit"),
+                                                     ftxui::separator(),
+                                                     ftxui::text("Path picker") | ftxui::bold,
+                                                     ftxui::text("J/K or arrows move   H parent   L enter directory"),
+                                                     ftxui::text("Space toggle source item   Enter confirm   Esc cancel"),
+                                                     ftxui::separator(), ftxui::text("Esc: close")})) | ftxui::center});
+    }
     if (delete_confirming) {
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Confirm destination deletion"),
@@ -456,6 +483,11 @@ int run_tui(const std::filesystem::path& state_dir,
                                                  "h: parent  l: enter  /: search  g: hidden  i: ignored  Space: toggle  F: flatten  Enter: confirm\n\n";
       if (browse_search) entries += "Search: " + browse_query + " (Enter: apply, Esc: cancel)\n";
       if (browse_scanning) entries += "Scanning…\n";
+      if (browse_remote && browse_remote_host.empty()) {
+        entries += "SSH Host (choose with j/k + Enter, or type manual host below):\n";
+        for (std::size_t index = 0; index < browse_ssh_hosts.size(); ++index)
+          entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} + browse_ssh_hosts[index] + "\n";
+      }
       entries += browse_directory.string() + "\n";
       for (std::size_t index = 0; index < browse_entries.size(); ++index)
         entries += std::string{static_cast<int>(index) == browse_selected ? "> " : "  "} +
@@ -466,26 +498,35 @@ int run_tui(const std::filesystem::path& state_dir,
         entries += "\nRoot: " + browse_root.string() + "\nStructure: " + (flatten_selection ? "flatten" : "preserve relative paths");
       return ftxui::dbox({dashboard | ftxui::dim,
                           ftxui::window(ftxui::text("Select source path"),
-                                        ftxui::paragraph(entries)) | ftxui::center});
+                                        ftxui::vbox({ftxui::paragraph(entries),
+                                                     browse_remote && browse_remote_host.empty() ? browse_manual_host_input->Render() : ftxui::text(""),
+                                                     browse_remote && !browse_remote_host.empty() ? browse_manual_path_input->Render() : ftxui::text(""),
+                                                     browse_remote && !browse_remote_host.empty() ? ftxui::text("Enter an absolute path above, or select entries below.") : ftxui::text(" ")})) | ftxui::center});
     }
     ftxui::Elements contents;
     if (wizard_step == 0) {
-      contents = {ftxui::text("Step 1/3: endpoints"), source_input->Render(),
-                  destination_input->Render(), ssh_destination_input->Render(),
-                  ftxui::text("Optional: same host's SSH path enables safe daemon-vs-SSH selection."), ftxui::separator(),
-                  ftxui::text("F2: source picker  F3: destination picker"),
+      contents = {ftxui::text("Step 1/4: Source"), source_input->Render(),
+                  ftxui::text("The Source is read from. It may be local or remote."),
+                  ftxui::text("F2: browse local source  F3: browse remote source"),
                   ftxui::text("Enter: next  Esc: cancel")};
     } else if (wizard_step == 1) {
-      contents = {ftxui::text("Step 2/3: transfer options"), dry_run_checkbox->Render(),
+      contents = {ftxui::text("Step 2/4: Destination"), destination_input->Render(),
+                  ftxui::text("The Destination is the single directory written to."),
+                  ftxui::text("F2: browse local destination  F3: browse remote destination"),
+                  ftxui::text("Enter: next  F4: previous  Esc: cancel")};
+    } else if (wizard_step == 2) {
+      contents = {ftxui::text("Step 3/4: transfer options"),
+                  ftxui::text("Directory Source mode: preserve directory level is the default."),
+                  copy_source_contents_checkbox->Render(), dry_run_checkbox->Render(),
                   compression_checkbox->Render(), delete_checkbox->Render(), trusted_daemon_checkbox->Render(),
                   source_has_git_repository ? include_git_checkbox->Render() : ftxui::text("No .git repository detected at source root"),
                   source_has_project_ignores ? include_project_ignored_checkbox->Render() : ftxui::text("No detected project build/dependency paths"), ftxui::separator(),
                   ftxui::text("Enter: review  F4: previous  Esc: cancel")};
     } else {
-      contents = {ftxui::text("Step 3/3: review"),
+      contents = {ftxui::text("Step 4/4: review"),
                   ftxui::text("Source: " + source), ftxui::text("Destination: " + destination),
-                  ftxui::text(ssh_destination.empty() ? "Paired SSH destination: not provided" :
-                                                        "Paired SSH destination: " + ssh_destination),
+                  ftxui::text(copy_source_contents ? "Result: source contents enter Destination directly" :
+                                                    "Result: source directory level is preserved under Destination"),
                   ftxui::text(std::string{"Dry-run: "} + (dry_run ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Compression: "} + (compression ? "enabled" : "disabled")),
                   ftxui::text(std::string{"Deletion: "} + (delete_extraneous ? "enabled" : "disabled")),
@@ -501,7 +542,17 @@ int run_tui(const std::filesystem::path& state_dir,
                             ftxui::center});
   });
   root = ftxui::CatchEvent(root, [&](ftxui::Event event) {
-    const bool dashboard_active = !creating && !settings_open && !delete_confirming && !scp_confirming;
+    const bool dashboard_active = !creating && !settings_open && !delete_confirming && !scp_confirming && !help_open;
+    if (help_open && event == ftxui::Event::Escape) {
+      help_open = false;
+      active_form = 0;
+      return true;
+    }
+    if (dashboard_active && event == ftxui::Event::Character('?')) {
+      help_open = true;
+      active_form = 0;
+      return true;
+    }
     if (dashboard_active && event == ftxui::Event::Character('q')) {
       screen.ExitLoopClosure()();
       return true;
@@ -541,6 +592,7 @@ int run_tui(const std::filesystem::path& state_dir,
       destination.clear();
       selected_source_paths.clear();
       flatten_selection = false;
+      copy_source_contents = false;
       delete_extraneous = false;
       compression = settings.compression;
       dry_run = settings.dry_run;
@@ -551,7 +603,7 @@ int run_tui(const std::filesystem::path& state_dir,
       include_project_ignored = false;
       return true;
     }
-    if (dashboard_active && event == ftxui::Event::Character('s')) { settings_open = true; active_form = 6; return true; }
+    if (dashboard_active && event == ftxui::Event::Character('s')) { settings_open = true; active_form = 7; return true; }
     if (settings_open && event == ftxui::Event::CtrlS) {
       try {
         settings.benchmark_size_mib = static_cast<unsigned>(std::stoul(settings_benchmark_size));
@@ -572,16 +624,15 @@ int run_tui(const std::filesystem::path& state_dir,
       active_form = creating ? wizard_step + 1 : 0;
       return true;
     }
-    if (creating && !browsing && wizard_step == 0 && event == ftxui::Event::F2) {
-      browse_destination = false;
-      const auto endpoint = rsync_assistant::parse_endpoint(source);
+    if (creating && !browsing && wizard_step <= 1 && event == ftxui::Event::F2) {
+      browse_destination = wizard_step == 1;
+      const auto endpoint = rsync_assistant::parse_endpoint(browse_destination ? destination : source);
       browse_selected = 0;
       try {
         if (endpoint.remote) {
           ++browse_scan_generation;
-          if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
+          for (const auto& path : rsync_assistant::remote_ssh_list(endpoint)) {
             const bool directory = path.ends_with('/');
             browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
           }
@@ -589,8 +640,11 @@ int run_tui(const std::filesystem::path& state_dir,
           browse_remote_prefix = endpoint.host + ":";
           browse_remote_host = endpoint.host;
           browse_remote_directory = endpoint.path;
+          browse_root = endpoint.path;
+          browse_selected_paths.clear();
         } else {
-          browse_directory = source.empty() ? std::filesystem::current_path() : std::filesystem::path{source};
+          const auto& value = browse_destination ? destination : source;
+          browse_directory = value.empty() ? std::filesystem::current_path() : std::filesystem::path{value};
           browse_root = browse_directory;
           browse_selected_paths.clear();
           flatten_selection = false;
@@ -605,16 +659,26 @@ int run_tui(const std::filesystem::path& state_dir,
       } catch (const std::exception& error) { status = error.what(); }
       return true;
     }
-    if (creating && !browsing && wizard_step == 0 && event == ftxui::Event::F3) {
-      browse_destination = true;
-      const auto endpoint = rsync_assistant::parse_endpoint(destination);
+    if (creating && !browsing && wizard_step <= 1 && event == ftxui::Event::F3) {
+      browse_destination = wizard_step == 1;
+      const auto endpoint = rsync_assistant::parse_endpoint(browse_destination ? destination : source);
       browse_selected = 0;
       try {
-        if (endpoint.remote) {
+        if (endpoint.remote || (browse_destination ? destination : source).empty()) {
           ++browse_scan_generation;
-          if (!rsync_assistant::remote_assistant_available(endpoint)) throw std::runtime_error("remote assistant is unavailable; enter remote path manually");
+          if (!endpoint.remote) {
+            browse_remote = true;
+            browse_remote_host.clear();
+            browse_manual_host.clear();
+            browse_manual_path.clear();
+            browse_ssh_hosts = rsync_assistant::ssh_config_hosts();
+            browse_entries.clear();
+            browsing = true;
+            active_form = 0;
+            return true;
+          }
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_assistant_list(endpoint)) {
+          for (const auto& path : rsync_assistant::remote_ssh_list(endpoint)) {
             const bool directory = path.ends_with('/');
             browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
           }
@@ -622,8 +686,11 @@ int run_tui(const std::filesystem::path& state_dir,
           browse_remote_prefix = endpoint.host + ":";
           browse_remote_host = endpoint.host;
           browse_remote_directory = endpoint.path;
+          browse_root = endpoint.path;
+          browse_selected_paths.clear();
         } else {
-          browse_directory = destination.empty() ? std::filesystem::current_path() : std::filesystem::path{destination};
+          const auto& value = browse_destination ? destination : source;
+          browse_directory = value.empty() ? std::filesystem::current_path() : std::filesystem::path{value};
           browse_remote = false;
           scan_browser();
         }
@@ -633,6 +700,32 @@ int run_tui(const std::filesystem::path& state_dir,
       return true;
     }
     if (browsing) {
+      if (browse_remote && browse_remote_host.empty()) {
+        if (event == ftxui::Event::Escape) { browsing = false; active_form = wizard_step + 1; return true; }
+        if (event == ftxui::Event::Return) {
+          if (browse_manual_host.empty() && !browse_ssh_hosts.empty()) browse_manual_host = browse_ssh_hosts.at(browse_selected);
+          if (browse_manual_host.empty()) { status = "Choose or enter an SSH Host"; return true; }
+          try {
+            browse_remote_host = browse_manual_host;
+            browse_remote_directory = rsync_assistant::remote_ssh_home(browse_remote_host);
+            browse_root = browse_remote_directory;
+            browse_remote_prefix = browse_remote_host + ":";
+            browse_entries.clear();
+            for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
+              const bool directory = path.ends_with('/');
+              browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
+            }
+            browse_selected = 0;
+          } catch (const std::exception& error) { browse_remote_host.clear(); status = error.what(); }
+          return true;
+        }
+        if ((event == ftxui::Event::Character('j') || event == ftxui::Event::ArrowDown) && browse_selected + 1 < static_cast<int>(browse_ssh_hosts.size())) { ++browse_selected; return true; }
+        if ((event == ftxui::Event::Character('k') || event == ftxui::Event::ArrowUp) && browse_selected > 0) { --browse_selected; return true; }
+        return browse_manual_host_input->OnEvent(event);
+      }
+      if (browse_remote && !browse_remote_host.empty() && browse_manual_path_input->OnEvent(event)) {
+        return true;
+      }
       if (browse_search) {
         if (event == ftxui::Event::Escape) { browse_search = false; browse_query.clear(); scan_browser(); return true; }
         if (event == ftxui::Event::Return) { browse_search = false; scan_browser(); return true; }
@@ -652,7 +745,7 @@ int run_tui(const std::filesystem::path& state_dir,
         } else {
           browse_remote_directory = browse_remote_directory.parent_path();
           browse_entries.clear();
-          for (const auto& path : rsync_assistant::remote_assistant_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
+          for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
             const bool directory = path.ends_with('/');
             browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
           }
@@ -669,7 +762,7 @@ int run_tui(const std::filesystem::path& state_dir,
             const auto next_directory = browse_entries.at(browse_selected).path;
             browse_entries.clear();
             browse_remote_directory = next_directory;
-            for (const auto& path : rsync_assistant::remote_assistant_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
+            for (const auto& path : rsync_assistant::remote_ssh_list({true, false, browse_remote_host, browse_remote_directory.string()})) {
               const bool directory = path.ends_with('/');
               browse_entries.push_back({directory ? path.substr(0, path.size() - 1) : path, directory, false});
             }
@@ -678,32 +771,43 @@ int run_tui(const std::filesystem::path& state_dir,
         }
         return true;
       }
-      if (!browse_destination && !browse_remote && !browse_entries.empty() && event == ftxui::Event::Character(' ')) {
+      if (!browse_destination && !browse_entries.empty() && event == ftxui::Event::Character(' ')) {
         const auto path = browse_entries.at(browse_selected).path.string();
         if (browse_selected_paths.contains(path)) browse_selected_paths.erase(path);
         else browse_selected_paths.insert(path);
         return true;
       }
-      if (!browse_destination && !browse_remote && event == ftxui::Event::Character('F')) {
+      if (!browse_destination && event == ftxui::Event::Character('F')) {
         flatten_selection = !flatten_selection;
         return true;
       }
+      if (event == ftxui::Event::Return && browse_remote && !browse_remote_host.empty() && !browse_manual_path.empty()) {
+        if (!browse_manual_path.starts_with('/')) { status = "Remote path must be absolute"; return true; }
+        const auto selected_path = browse_remote_prefix + browse_manual_path;
+        if (browse_destination) destination = selected_path;
+        else source = selected_path;
+        browsing = false;
+        active_form = wizard_step + 1;
+        return true;
+      }
       if (!browse_entries.empty() && event == ftxui::Event::Return) {
-        if (!browse_destination && !browse_remote) {
+        if (!browse_destination) {
           if (browse_selected_paths.empty()) {
-            status = "Select one or more source entries with Space";
-            return true;
-          }
-          source = browse_root.string() + "/";
-          selected_source_paths.clear();
-          for (const auto& selected_path : browse_selected_paths) {
-            std::error_code error;
-            const auto relative = std::filesystem::relative(selected_path, browse_root, error);
-            if (error || relative.empty() || relative.is_absolute()) {
-              status = "Selected path is outside the source root";
-              return true;
+            if (browse_remote) source = browse_remote_prefix + browse_entries.at(browse_selected).path.string();
+            else { status = "Select one or more source entries with Space"; return true; }
+          } else {
+            const auto root = browse_remote ? browse_remote_directory : browse_root;
+            source = (browse_remote ? browse_remote_prefix : "") + root.string() + "/";
+            selected_source_paths.clear();
+            for (const auto& selected_path : browse_selected_paths) {
+              std::error_code error;
+              const auto relative = std::filesystem::relative(selected_path, root, error);
+              if (error || relative.empty() || relative.is_absolute()) {
+                status = "Selected path is outside the source root";
+                return true;
+              }
+              selected_source_paths.push_back(relative.generic_string());
             }
-            selected_source_paths.push_back(relative.generic_string());
           }
         } else {
         const auto selected_path = (browse_remote ? browse_remote_prefix : "") + browse_entries.at(browse_selected).path.string();
@@ -748,8 +852,8 @@ int run_tui(const std::filesystem::path& state_dir,
         }
         if (creating) {
           if (wizard_step == 0) {
-            if (source.empty() || destination.empty())
-              throw std::runtime_error("source and destination are required before continuing");
+            if (source.empty())
+              throw std::runtime_error("a Source is required before continuing");
             const auto source_endpoint = rsync_assistant::parse_endpoint(source);
             const auto profile = !source_endpoint.remote ? rsync_assistant::detect_project_profile(source_endpoint.path) : rsync_assistant::ProjectProfile{};
             source_has_git_repository = profile.has_git_repository;
@@ -761,14 +865,22 @@ int run_tui(const std::filesystem::path& state_dir,
             return true;
           }
           if (wizard_step == 1) {
+            if (destination.empty())
+              throw std::runtime_error("a Destination directory is required before continuing");
             ++wizard_step;
             active_form = wizard_step + 1;
             return true;
           }
-          (void)client.create_ready_task({source, destination, delete_extraneous, compression, dry_run, trusted_daemon, ssh_destination, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
+          if (wizard_step == 2) {
+            ++wizard_step;
+            active_form = wizard_step + 1;
+            return true;
+          }
+          auto task_source = source;
+          if (copy_source_contents && selected_source_paths.empty() && !task_source.empty() && !task_source.ends_with('/')) task_source += '/';
+          (void)client.create_ready_task({task_source, destination, delete_extraneous, compression, dry_run, trusted_daemon, {}, selected_source_paths, flatten_selection, include_git_data, include_project_ignored});
           source.clear();
           destination.clear();
-          ssh_destination.clear();
           delete_extraneous = false;
           compression = settings.compression;
           dry_run = settings.dry_run;
@@ -779,6 +891,7 @@ int run_tui(const std::filesystem::path& state_dir,
           include_project_ignored = false;
           selected_source_paths.clear();
           flatten_selection = false;
+          copy_source_contents = false;
           creating = false;
           wizard_step = 0;
           active_form = 0;
@@ -789,7 +902,7 @@ int run_tui(const std::filesystem::path& state_dir,
           if (task.state == rsync_assistant::TaskState::awaiting_execution_confirmation) {
             if (task.delete_extraneous) delete_confirming = true;
             else (void)client.execute(task.id);
-            if (delete_confirming) active_form = 4;
+            if (delete_confirming) active_form = 5;
           }
           refresh();
         }
@@ -833,7 +946,7 @@ int run_tui(const std::filesystem::path& state_dir,
         if (tasks.at(selected).state != rsync_assistant::TaskState::failed)
           throw std::runtime_error("scp fallback is available only after rsync failure");
         scp_confirming = true;
-        active_form = 5;
+        active_form = 6;
       }
       catch (const std::exception& error) { status = error.what(); }
       return true;

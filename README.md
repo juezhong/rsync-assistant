@@ -165,10 +165,10 @@ cmake --build build --parallel
 
 ## 第一次创建任务
 
-1. 在主界面按 `n`，进入三步新建任务面板。
-2. 输入本地源路径和目标路径；普通远端格式是 `host:/absolute/path`，会使用你已有的 SSH 配置与 ssh-agent。
-3. 可按 `F2` / `F3` 选择源和目标。源选择器支持 `h`、`j`、`k`、`l` 浏览，`Space` 多选，`/` 搜索，`g` 显示隐藏文件，`i` 包含自动忽略项，`F` 切换扁平化。
-4. 在第二步选择压缩、dry-run、删除和项目排除项。`.git` 不会默认传输；检测到的 `build/`、虚拟环境、Rust `target/` 和常见依赖目录也默认排除。
+1. 在主界面按 `n`，依次定义 Source、Destination、选项和审阅内容。Source 是读取端，Destination 是唯一写入目录，因此同一向导同时支持推送和拉取。
+2. 普通远端格式是 `host:/absolute/path`。按 `F2` 选择本地路径，按 `F3` 选择远端路径；远端选择器会列出 `~/.ssh/config`（及其 Include 文件）中的显式别名，也始终允许输入 `user@host`。
+3. Source 选择器支持 `h`、`j`、`k`、`l` 浏览，`Space` 多选，`/` 搜索，`g` 显示隐藏文件，`i` 包含自动忽略项，`F` 切换扁平化。远端浏览仅使用 SSH，不需要远端安装本软件。
+4. 在选项步骤选择压缩、dry-run、删除、项目排除，以及目录 Source 的复制方式。默认保留目录层级（`project` 复制为 `destination/project/...`）；明确启用“仅复制目录内容”后，`project/` 的内容进入 `destination/...`。
 5. 审阅生成的命令，按 Enter 创建 Ready Task。创建任务不会立即传输。
 6. 主界面选中该任务后按 Enter：先执行 dry-run 并显示结果；再次按 Enter 才开始真正传输。
 
