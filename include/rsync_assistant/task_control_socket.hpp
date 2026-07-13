@@ -38,6 +38,7 @@ class TaskControlSocketClient {
   [[nodiscard]] TransferTask pause(const std::string& task_id) const;
   [[nodiscard]] TransferTask resume(const std::string& task_id) const;
   [[nodiscard]] TransferTask stop(const std::string& task_id) const;
+  [[nodiscard]] TransferTask restart(const std::string& task_id) const;
   [[nodiscard]] TransferTask await_completion(const std::string& task_id) const;
 
  private:

@@ -102,6 +102,11 @@ struct TaskControlService::Impl {
     sqlite3_exec(database,
                  "ALTER TABLE transfer_tasks ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 1",
                  nullptr, nullptr, nullptr);
+    check_sqlite(sqlite3_exec(database,
+                              "UPDATE transfer_tasks SET state='interrupted' "
+                              "WHERE state IN ('running', 'paused')",
+                              nullptr, nullptr, nullptr),
+                 database, "recover interrupted tasks");
   }
 
   ~Impl() { sqlite3_close(database); }
@@ -150,7 +155,8 @@ std::vector<TransferTask> TaskControlService::list_tasks() const {
                             state == "running" ? TaskState::running :
                             state == "paused" ? TaskState::paused :
                             state == "completed" ? TaskState::completed :
-                            state == "cancelled" ? TaskState::cancelled : TaskState::failed;
+                            state == "cancelled" ? TaskState::cancelled :
+                            state == "interrupted" ? TaskState::interrupted : TaskState::failed;
     tasks.push_back({
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0)),
         reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 1)),
@@ -292,6 +298,20 @@ TransferTask TaskControlService::stop(const std::string& task_id) {
   it->second.stop();
   impl_->processes.erase(it);
   sqlite3_exec(impl_->database, ("UPDATE transfer_tasks SET state='cancelled' WHERE id='" + task_id + "'").c_str(), nullptr, nullptr, nullptr);
+  const auto refreshed = list_tasks();
+  return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
+}
+
+TransferTask TaskControlService::restart(const std::string& task_id) {
+  const auto tasks = list_tasks();
+  const auto it = std::find_if(tasks.begin(), tasks.end(), [&](const auto& task) { return task.id == task_id; });
+  if (it == tasks.end() || (it->state != TaskState::failed && it->state != TaskState::interrupted))
+    throw std::runtime_error("only failed or interrupted rsync tasks can be re-prepared");
+  Statement statement{impl_->database,
+                      "UPDATE transfer_tasks SET state='ready', command='', output='' WHERE id=?"};
+  check_sqlite(sqlite3_bind_text(statement.get(), 1, task_id.c_str(), -1, SQLITE_TRANSIENT),
+               impl_->database, "bind task id");
+  check_sqlite(sqlite3_step(statement.get()), impl_->database, "restart task");
   const auto refreshed = list_tasks();
   return *std::find_if(refreshed.begin(), refreshed.end(), [&](const auto& task) { return task.id == task_id; });
 }

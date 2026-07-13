@@ -49,6 +49,7 @@ class TaskControlService {
   [[nodiscard]] TransferTask pause(const std::string& task_id);
   [[nodiscard]] TransferTask resume(const std::string& task_id);
   [[nodiscard]] TransferTask stop(const std::string& task_id);
+  [[nodiscard]] TransferTask restart(const std::string& task_id);
   [[nodiscard]] TransferTask await_completion(const std::string& task_id);
 
  private:

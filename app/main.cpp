@@ -78,6 +78,7 @@ int run_tui(const std::filesystem::path& state_dir,
         if (state == rsync_assistant::TaskState::paused) return "Paused";
         if (state == rsync_assistant::TaskState::completed) return "Completed";
         if (state == rsync_assistant::TaskState::cancelled) return "Cancelled";
+        if (state == rsync_assistant::TaskState::interrupted) return "Interrupted";
         return "Failed";
       };
       for (std::size_t index = 0; index < tasks.size(); ++index)
@@ -103,6 +104,7 @@ int run_tui(const std::filesystem::path& state_dir,
         ftxui::vbox({ftxui::text("Details / shortcuts") | ftxui::bold,
                      ftxui::separator(), ftxui::text("Enter: preflight/execute"),
                      ftxui::text("p: pause/resume  x: stop  w: wait"),
+                     ftxui::text("e: re-prepare interrupted/failed rsync task"),
                      ftxui::text("c: explicit scp fallback after rsync failure"),
                      ftxui::text("n: new task"), ftxui::text("?: help")}) |
             ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 28),
@@ -266,6 +268,11 @@ int run_tui(const std::filesystem::path& state_dir,
     }
     if (!creating && !tasks.empty() && event == ftxui::Event::Character('w')) {
       try { (void)client.await_completion(tasks.at(selected).id); refresh(); }
+      catch (const std::exception& error) { status = error.what(); }
+      return true;
+    }
+    if (!creating && !tasks.empty() && event == ftxui::Event::Character('e')) {
+      try { (void)client.restart(tasks.at(selected).id); refresh(); }
       catch (const std::exception& error) { status = error.what(); }
       return true;
     }
